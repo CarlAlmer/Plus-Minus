@@ -8,3 +8,5 @@ with pdfplumber.open(path) as pdf:
         text = page.extract_text()
         print(f"\n--- Page {i} ---\n")
         print(text or "[no text extracted]")
+
+sdssss
