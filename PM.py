@@ -10,4 +10,4 @@ with pdfplumber.open(path) as pdf:
         print(text or "[no text extracted]")
 
 sdssss
- hello
+
