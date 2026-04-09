@@ -52,6 +52,46 @@ def clear_existing_player_stats(conn: sqlite3.Connection, game_id: int) -> None:
     conn.commit()
  
  
+def get_or_create_lineup_id(conn: sqlite3.Connection, lineup: List[str]) -> Optional[int]:
+    """
+    Return the lineup_id for this exact 5-man group, creating a new row in
+    the lineups table if this combination has not been seen before.
+ 
+    Players are sorted alphabetically before storage so that the same group
+    always maps to the same lineup_id regardless of the order they appear in
+    the live lineup list.
+ 
+    Returns None if fewer than 5 players are provided.
+    """
+    if len(lineup) != 5:
+        return None
+ 
+    sorted_players = sorted(lineup)
+    cursor = conn.cursor()
+ 
+    # Check if this combination already exists
+    cursor.execute(
+        """
+        SELECT lineup_id FROM lineups
+        WHERE player1 = ? AND player2 = ? AND player3 = ? AND player4 = ? AND player5 = ?
+        """,
+        tuple(sorted_players),
+    )
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+ 
+    # New combination — insert it
+    cursor.execute(
+        """
+        INSERT INTO lineups (player1, player2, player3, player4, player5)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        tuple(sorted_players),
+    )
+    return cursor.lastrowid
+ 
+ 
 def insert_lineup_state(
     conn: sqlite3.Connection,
     game_id: int,
@@ -59,13 +99,15 @@ def insert_lineup_state(
     lineup: List[str],
 ) -> None:
     padded = lineup[:5] + [None] * (5 - len(lineup[:5]))
+    lineup_id = get_or_create_lineup_id(conn, lineup)
+ 
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT INTO lineup_states (
-            game_id, event_num, player1, player2, player3, player4, player5
+            game_id, event_num, player1, player2, player3, player4, player5, lineup_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             game_id,
@@ -75,6 +117,7 @@ def insert_lineup_state(
             padded[2],
             padded[3],
             padded[4],
+            lineup_id,
         ),
     )
  
@@ -220,6 +263,7 @@ def compute_game_plus_minus(game_id: int, preview_scoring: bool = True) -> Dict[
         )
  
     insert_player_game_stats(conn, game_id, plus_minus)
+    conn.commit()
     conn.close()
  
     return plus_minus

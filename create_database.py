@@ -1,10 +1,10 @@
 import sqlite3
-
+ 
 # this will create the database file if it doesn't exist
 conn = sqlite3.connect("data/basketball.db")
-
+ 
 cursor = conn.cursor()
-
+ 
 # -------------------------
 # games table
 # -------------------------
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS games (
     source_url TEXT
 )
 """)
-
+ 
 # -------------------------
 # raw play-by-play lines
 # -------------------------
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS raw_lines (
     line_text TEXT
 )
 """)
-
+ 
 # -------------------------
 # parsed events
 # -------------------------
@@ -46,23 +46,47 @@ CREATE TABLE IF NOT EXISTS events (
     description TEXT
 )
 """)
-
+ 
+# -------------------------
+# distinct 5-man lineups
+#
+# Each row represents a unique combination of 5 players, stored sorted
+# alphabetically so the same group always maps to the same lineup_id
+# regardless of the order players subbed in at runtime.
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS lineups (
+    lineup_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    player1     TEXT NOT NULL,
+    player2     TEXT NOT NULL,
+    player3     TEXT NOT NULL,
+    player4     TEXT NOT NULL,
+    player5     TEXT NOT NULL,
+    UNIQUE (player1, player2, player3, player4, player5)
+)
+""")
+ 
 # -------------------------
 # lineup states
+#
+# One row per event, recording which players were on the floor.
+# lineup_id references the lineups table when all 5 slots are filled;
+# it is NULL whenever fewer than 5 players are on the floor for that event.
 # -------------------------
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS lineup_states (
-    lineup_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    game_id INTEGER,
-    event_num INTEGER,
-    player1 TEXT,
-    player2 TEXT,
-    player3 TEXT,
-    player4 TEXT,
-    player5 TEXT
+    state_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id     INTEGER,
+    event_num   INTEGER,
+    player1     TEXT,
+    player2     TEXT,
+    player3     TEXT,
+    player4     TEXT,
+    player5     TEXT,
+    lineup_id   INTEGER REFERENCES lineups (lineup_id)
 )
 """)
-
+ 
 # -------------------------
 # player stats per game
 # -------------------------
@@ -74,8 +98,8 @@ CREATE TABLE IF NOT EXISTS player_game_stats (
     plus_minus INTEGER
 )
 """)
-
+ 
 conn.commit()
 conn.close()
-
+ 
 print("Database and tables created successfully")
