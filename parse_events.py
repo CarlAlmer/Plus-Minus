@@ -69,7 +69,7 @@ EVENT_PRIORITY = {
     # --- Substitutions: processed last ---
     # This is the key fix: subs always trail every scoring event at the same timestamp,
     # so the player who earned the trip to the line receives the plus/minus credit.
-    "sub_in":           3,   # Player entering the game
+    "sub_in":           4,   # Player entering the game
     "sub_out":          3,   # Player leaving the game
 }
 
