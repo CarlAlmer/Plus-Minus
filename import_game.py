@@ -81,15 +81,3 @@ def import_game_from_pdf_url(pdf_url, game_date=None, opponent=None, location=No
     conn.close()
 
     print("Import complete.")
-
-
-if __name__ == "__main__":
-    pdf_url = "https://dxbhsrqyrr690.cloudfront.net/sidearm.nextgen.sites/" \
-"uwrfsports.com/stats/mbball/2025/pdf/20260211090634-2715085.pdf"
-
-    import_game_from_pdf_url(
-        pdf_url=pdf_url,
-        game_date="2026-02-11",
-        opponent="UW-Stevens Point",
-        location="Home"
-    )
