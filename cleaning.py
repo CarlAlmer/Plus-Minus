@@ -1,5 +1,7 @@
 import sqlite3
 
+# this path could be different things depending on where you code is stored on your computer
+# such as "data/basketball.db"
 DB_PATH = "basketball.db"
 
 
