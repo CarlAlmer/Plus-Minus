@@ -2,14 +2,18 @@ import sqlite3
 import re
 from typing import Dict, List, Optional, Tuple
  
- 
+# could also need path to be data/basketball.db if running from a different directory
 DB_PATH = "data/basketball.db"
  
- 
+# -------------------------------------------------------------------------
+# DB CONNECTION
+# -------------------------------------------------------------------------
 def connect_db() -> sqlite3.Connection:
     return sqlite3.connect(DB_PATH)
  
- 
+# -------------------------------------------------------------------------
+# HELPERS
+# -------------------------------------------------------------------------
 def normalize_player_name(name: Optional[str]) -> Optional[str]:
     if not name:
         return None
@@ -373,8 +377,38 @@ def print_plus_minus_results(plus_minus: Dict[str, int]) -> None:
         print(f"{player}: {value:+d}")
  
  
+# -------------------------------------------------------------------------
+# LOOP THROUGH ALL GAMES
+# -------------------------------------------------------------------------
+def compute_all_games_plus_minus():
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT game_id FROM games ORDER BY game_id")
+    game_ids = [row[0] for row in cursor.fetchall()]
+
+    conn.close()
+
+    print(f"Found {len(game_ids)} games.\n")
+
+    for game_id in game_ids:
+        print(f"==============================")
+        print(f"Processing game_id {game_id}")
+        print(f"==============================")
+
+        try:
+            results = compute_game_plus_minus(game_id)
+            print_plus_minus_results(results)
+            print("\n")
+
+        except Exception as e:
+            print(f"ERROR in game {game_id}: {e}\n")
+
+
+# -------------------------------------------------------------------------
+# RUN
+# -------------------------------------------------------------------------
 if __name__ == "__main__":
-    game_id = 22
-    results = compute_game_plus_minus(game_id)
-    print_plus_minus_results(results)
+    compute_all_games_plus_minus()
+
  

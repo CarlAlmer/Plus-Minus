@@ -16,6 +16,7 @@ def clear_all_tables():
 
     tables = [
         "events",
+        "lineups",
         "lineup_states",
         "player_game_stats",
         "raw_lines",
