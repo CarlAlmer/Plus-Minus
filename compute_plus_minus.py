@@ -21,7 +21,7 @@ def normalize_player_name(name: Optional[str]) -> Optional[str]:
  
  
 # -------------------------------------------------------------------------
-# Starting lineup + score — parsed automatically from the raw box score
+# Starting lineup + score - parsed automatically from the raw box score
 # -------------------------------------------------------------------------
  
 def parse_starters_and_scores(lines: List[str]):
@@ -33,6 +33,12 @@ def parse_starters_and_scores(lines: List[str]):
  
     Starters are identified by the asterisk (*) in the UWRF box score section.
     Scores are read from the score-by-period line embedded in the raw text.
+ 
+    Handles both PDF orderings:
+      - Opponent first: opp box score appears before UWRF
+      - UWRF first:     UWRF box score appears first, opp score is on the Site line
+ 
+    Also handles overtime games which have 3+ period columns before the total.
     """
     uwrf_score = None
     opp_score = None
@@ -40,15 +46,17 @@ def parse_starters_and_scores(lines: List[str]):
     in_uwrf_box = False
  
     for line in lines:
-        # Score is on a line like: 'Site: ... UW-River Falls 32 38 70'
-        score_match = re.search(r"UW-River Falls\s+\d+\s+\d+\s+(\d+)", line)
+        # Score: last number on any line containing 'UW-River Falls' + digits.
+        # Handles OT games (3+ period columns) by anchoring to end of line.
+        score_match = re.search(r"UW-River Falls(?:\s+\d+)+\s+(\d+)\s*$", line)
         if score_match and uwrf_score is None:
             uwrf_score = int(score_match.group(1))
  
-        # Opponent score: a line matching 'Team Name X Y TOTAL' before UWRF section
-        if not in_uwrf_box and opp_score is None:
-            opp_match = re.match(r"^[A-Za-z\.\-\s\(\)]+\s+\d+\s+\d+\s+(\d+)$", line.strip())
-            if opp_match and "UW-River Falls" not in line:
+        # Opponent score: last number on any non-UWRF line ending with digits.
+        # Handles OT games, opponent-first ordering, and score embedded in Site line.
+        if opp_score is None and "UW-River Falls" not in line:
+            opp_match = re.search(r"[A-Za-z][A-Za-z.\-\s()]+(?:\s+\d+)+\s+(\d+)\s*$", line.strip())
+            if opp_match:
                 opp_score = int(opp_match.group(1))
  
         # UWRF box score section starts with exactly 'UW-River Falls <score>'
@@ -234,7 +242,7 @@ def validate_plus_minus(
     something went wrong with lineup tracking or event parsing.
     """
     if uwrf_score is None or opp_score is None:
-        print("WARNING: Could not parse final scores — skipping plus/minus validation.")
+        print("WARNING: Could not parse final scores - skipping plus/minus validation.")
         return
  
     point_diff = uwrf_score - opp_score
@@ -264,7 +272,7 @@ def compute_game_plus_minus(game_id: int) -> Dict[str, int]:
     Compute plus/minus for every UWRF player in a given game.
  
     Starting lineup is parsed automatically from the raw box score in the
-    database — no manual STARTING_LINEUP_BY_GAME dict needed.
+    database - no manual STARTING_LINEUP_BY_GAME dict needed.
  
     The raw PDF play-by-play has two ordering quirks:
  
@@ -303,67 +311,70 @@ def compute_game_plus_minus(game_id: int) -> Dict[str, int]:
     print(f"Loaded {len(events)} events for game_id {game_id}")
     print(f"Starting lineup (auto-detected): {lineup}\n")
  
-    for i, ev in enumerate(events):
-        event_num, period, clock, team, player, event_type, points, desc = ev
-        player = normalize_player_name(player)
+    try:
+        for i, ev in enumerate(events):
+            event_num, period, clock, team, player, event_type, points, desc = ev
+            player = normalize_player_name(player)
  
-        if event_type == "sub_out" and team == "UWRF" and player:
-            if player in lineup:
-                lineup.remove(player)
+            if event_type == "sub_out" and team == "UWRF" and player:
+                if player in lineup:
+                    lineup.remove(player)
  
-            for j in range(i + 1, len(events)):
-                ev2 = events[j]
-                en2, p2, cl2, t2, pl2, et2, pts2, d2 = ev2
-                if (p2, cl2) != (period, clock):
-                    break
-                pl2 = normalize_player_name(pl2)
-                if t2 == "UWRF" and et2 == "sub_in" and pl2:
-                    ensure_player(plus_minus, pl2)
-                    if pl2 not in lineup:
-                        lineup.append(pl2)
-                    events[j][5] = "_sub_in_done"
-                    break
+                for j in range(i + 1, len(events)):
+                    ev2 = events[j]
+                    en2, p2, cl2, t2, pl2, et2, pts2, d2 = ev2
+                    if (p2, cl2) != (period, clock):
+                        break
+                    pl2 = normalize_player_name(pl2)
+                    if t2 == "UWRF" and et2 == "sub_in" and pl2:
+                        ensure_player(plus_minus, pl2)
+                        if pl2 not in lineup:
+                            lineup.append(pl2)
+                        events[j][5] = "_sub_in_done"
+                        break
  
-            if len(lineup) != 5:
-                raise ValueError(
-                    f"Lineup size error after sub_out at event {event_num} "
-                    f"(P{period} {clock}): expected 5 players, got {len(lineup)}. "
-                    f"Current lineup: {lineup}"
+                if len(lineup) != 5:
+                    raise ValueError(
+                        f"Lineup size error after sub_out at event {event_num} "
+                        f"(P{period} {clock}): expected 5 players, got {len(lineup)}. "
+                        f"Current lineup: {lineup}"
+                    )
+ 
+            elif event_type == "sub_in" and team == "UWRF" and player:
+                ensure_player(plus_minus, player)
+                if player not in lineup:
+                    lineup.append(player)
+ 
+                if len(lineup) != 5:
+                    raise ValueError(
+                        f"Lineup size error after sub_in at event {event_num} "
+                        f"(P{period} {clock}): expected 5 players, got {len(lineup)}. "
+                        f"Current lineup: {lineup}"
+                    )
+ 
+            elif event_type == "_sub_in_done":
+                pass
+ 
+            elif event_type in {"made_2pt", "made_3pt", "made_ft"}:
+                apply_scoring_event(
+                    lineup=lineup,
+                    plus_minus=plus_minus,
+                    team=team,
+                    points=points,
                 )
  
-        elif event_type == "sub_in" and team == "UWRF" and player:
-            ensure_player(plus_minus, player)
-            if player not in lineup:
-                lineup.append(player)
- 
-            if len(lineup) != 5:
-                raise ValueError(
-                    f"Lineup size error after sub_in at event {event_num} "
-                    f"(P{period} {clock}): expected 5 players, got {len(lineup)}. "
-                    f"Current lineup: {lineup}"
-                )
- 
-        elif event_type == "_sub_in_done":
-            pass
- 
-        elif event_type in {"made_2pt", "made_3pt", "made_ft"}:
-            apply_scoring_event(
-                lineup=lineup,
-                plus_minus=plus_minus,
-                team=team,
-                points=points,
+            insert_lineup_state(
+                conn=conn,
+                game_id=game_id,
+                event_num=event_num,
+                lineup=lineup.copy(),
             )
  
-        insert_lineup_state(
-            conn=conn,
-            game_id=game_id,
-            event_num=event_num,
-            lineup=lineup.copy(),
-        )
+        insert_player_game_stats(conn, game_id, plus_minus)
+        conn.commit()
  
-    insert_player_game_stats(conn, game_id, plus_minus)
-    conn.commit()
-    conn.close()
+    finally:
+        conn.close()
  
     # --- Validate total plus/minus equals 5 * point differential ---
     validate_plus_minus(plus_minus, uwrf_score, opp_score)
@@ -383,28 +394,28 @@ def print_plus_minus_results(plus_minus: Dict[str, int]) -> None:
 def compute_all_games_plus_minus():
     conn = connect_db()
     cursor = conn.cursor()
-
+ 
     cursor.execute("SELECT game_id FROM games ORDER BY game_id")
     game_ids = [row[0] for row in cursor.fetchall()]
-
+ 
     conn.close()
-
+ 
     print(f"Found {len(game_ids)} games.\n")
-
+ 
     for game_id in game_ids:
         print(f"==============================")
         print(f"Processing game_id {game_id}")
         print(f"==============================")
-
+ 
         try:
             results = compute_game_plus_minus(game_id)
             print_plus_minus_results(results)
             print("\n")
-
+ 
         except Exception as e:
             print(f"ERROR in game {game_id}: {e}\n")
-
-
+ 
+ 
 # -------------------------------------------------------------------------
 # RUN
 # -------------------------------------------------------------------------
