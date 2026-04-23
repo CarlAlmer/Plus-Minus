@@ -95,10 +95,79 @@ CREATE TABLE IF NOT EXISTS player_game_stats (
     stat_id INTEGER PRIMARY KEY AUTOINCREMENT,
     game_id INTEGER,
     player_name TEXT,
-    plus_minus INTEGER
+    plus_minus INTEGER,
+    min_played FLOAT,
+    stints INTEGER,
+    fg_makes INTEGER,
+    fg_attempts INTEGER,
+    fg_percentage FLOAT,
+    pt3_makes INTEGER,
+    pt3_attempts INTEGER,
+    pt3_percentage FLOAT,
+    ft_makes INTEGER,
+    ft_attempts INTEGER,
+    ft_percentage FLOAT,
+    points INTEGER,
+    assists INTEGER,
+    orb INTEGER,
+    drb INTEGER,
+    rebounds INTEGER,
+    fouls INTEGER,
+    turnovers INTEGER,
+    blocks INTEGER,
+    steals INTEGER 
+        
 )
 """)
- 
+
+# -------------------------
+# plus minus seaonal stats
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS season_plus_minus_stats (
+    player_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_name TEXT,
+    games_played INTEGER,
+    plus_minus INTEGER,
+    min_played FLOAT,
+    plus_minus_per_40 FLOAT,
+    stints INTEGER,
+    plus_minus_per_stint FLOAT,
+    points INTEGER,
+    points_per_40 FLOAT,
+    assists INTEGER,
+    assists_per_40 FLOAT
+    
+)
+""")
+
+# -------------------------
+# player stats season totals
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS player_season_stats (
+    stat_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_name TEXT,
+    games_played INTEGER,
+    fg_makes INTEGER,
+    fg_attempts INTEGER,
+    fg_percentage FLOAT,
+    pt3_makes INTEGER,
+    pt3_attempts INTEGER,
+    pt3_percentage FLOAT,
+    ft_makes INTEGER,
+    ft_attempts INTEGER,
+    ft_percentage FLOAT,
+    rebounds INTEGER,
+    fouls INTEGER,
+    turnovers INTEGER,
+    blocks INTEGER,
+    steals INTEGER 
+        
+)
+""")
+
+
 conn.commit()
 conn.close()
  

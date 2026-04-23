@@ -375,7 +375,7 @@ def insert_parsed_events(conn: sqlite3.Connection, parsed_events: List[Dict]) ->
     conn.commit()
  
  
-def parse_game_events(game_id: int, delete_existing: bool = True, preview_count: int = 30) -> None:
+def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
     conn = connect_db()
  
     if delete_existing:
@@ -467,29 +467,38 @@ def parse_game_events(game_id: int, delete_existing: bool = True, preview_count:
         # Note: event_num is intentionally omitted here; sort_events_by_priority sets it
         parsed_events.append(event)
  
-    print(f"Found {len(parsed_events)} parsed events for game_id {game_id} (before priority sort)\n")
- 
-    # ---------------------------------------------------------------------------
     # Apply priority sort and re-assign event_num
-    # This is the fix: substitutions at the same timestamp as scoring events
-    # are pushed to the end of that timestamp's group, so the outgoing player
-    # receives credit for any points scored before the sub takes effect.
-    # ---------------------------------------------------------------------------
     parsed_events = sort_events_by_priority(parsed_events)
- 
-    # Show the first N events after sorting so you can visually verify the order
-    print(f"After priority sort — first {preview_count} events:\n")
-    for event in parsed_events[:preview_count]:
-        print(event)
- 
+
     # Write the sorted, correctly numbered events to the database
     insert_parsed_events(conn, parsed_events)
     conn.close()
- 
-    print(f"\nParsed and inserted {len(parsed_events)} events for game_id {game_id}")
- 
- 
+
+
+def get_unparsed_game_ids(conn: sqlite3.Connection) -> List[int]:
+    # Return every game_id that has raw lines loaded but no events parsed yet.
+    # This lets __main__ automatically pick up any game that bulk_import.py
+    # has imported but parse_game_events has not yet run on.
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT DISTINCT r.game_id
+        FROM raw_lines r
+        LEFT JOIN events e ON e.game_id = r.game_id
+        WHERE e.game_id IS NULL
+        ORDER BY r.game_id
+        """
+    )
+    return [row[0] for row in cursor.fetchall()]
+
+
 if __name__ == "__main__":
-    # Re-parse game 3 with the priority-corrected ordering
-    game_id = 25
-    parse_game_events(game_id=game_id, delete_existing=True, preview_count=30)
+    # Automatically parse every game that has raw lines but no events yet.
+    # No game_id needs to be specified — this picks up whatever bulk_import.py
+    # has loaded since the last time this script was run.
+    conn = connect_db()
+    unparsed_ids = get_unparsed_game_ids(conn)
+    conn.close()
+
+    for game_id in unparsed_ids:
+        parse_game_events(game_id=game_id, delete_existing=True)
