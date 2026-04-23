@@ -9,14 +9,14 @@ from PIL import Image
 # PAGE CONFIG
 # -------------------------------------------------------------------------
 st.set_page_config(
-    page_title="UWRF Basketball Plus/Minus",
+    page_title="UWRF Men's Basketball Plus/Minus",
     layout="wide",
 )
  
 # -------------------------------------------------------------------------
 # HEADER
 # -------------------------------------------------------------------------
-st.title("UWRF Basketball Plus/Minus Dashboard")
+st.title("UWRF Men's Basketball Plus/Minus Dashboard")
 st.caption("UW-River Falls Men's Basketball — Season Analytics")
  
 st.divider()
