@@ -1,7 +1,7 @@
 import sqlite3
  
 # this will create the database file if it doesn't exist
-conn = sqlite3.connect("basketball.db")
+conn = sqlite3.connect("data/basketball.db")
  
 cursor = conn.cursor()
  
