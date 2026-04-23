@@ -4,11 +4,8 @@ from PIL import Image
 # -------------------------------------------------------------------------
 # PAGE CONFIG
 # -------------------------------------------------------------------------
-logo = Image.open("C:/Users/alber/OneDrive - University of Wisconsin-River Falls/" \
-"Plus Minus Project/scripts/Uw_river_falls_falcons_logo.png")
 st.set_page_config(
     page_title="UWRF Basketball Plus/Minus",
-    page_icon=logo,
     layout="wide",
 )
  
