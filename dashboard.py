@@ -1,21 +1,22 @@
 import streamlit as st
 from PIL import Image
+
+# -------------------------------------------------------------------------
+# link to dashboard: https://uwrfpluseminus.streamlit.app/
+# -------------------------------------------------------------------------
  
 # -------------------------------------------------------------------------
 # PAGE CONFIG
 # -------------------------------------------------------------------------
-logo = Image.open("C:/Users/alber/OneDrive - University of Wisconsin-River Falls/" \
-"Plus Minus Project/scripts/Uw_river_falls_falcons_logo.png")
 st.set_page_config(
-    page_title="UWRF Basketball Plus/Minus",
-    page_icon=logo,
+    page_title="UWRF Men's Basketball Plus/Minus",
     layout="wide",
 )
  
 # -------------------------------------------------------------------------
 # HEADER
 # -------------------------------------------------------------------------
-st.title("UWRF Basketball Plus/Minus Dashboard")
+st.title("UWRF Men's Basketball Plus/Minus Dashboard")
 st.caption("UW-River Falls Men's Basketball — Season Analytics")
  
 st.divider()
@@ -23,7 +24,7 @@ st.divider()
 # -------------------------------------------------------------------------
 # TABS
 # -------------------------------------------------------------------------
-games_tab, players_tab, lineups_tab = st.tabs(["Games", "Players", "Lineups"])
+games_tab, players_tab, lineups_tab, = st.tabs(["Games", "Players", "Lineups"])
  
 with games_tab:
     st.header("Games")
