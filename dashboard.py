@@ -11,7 +11,9 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from compute_plus_minus import parse_starters_and_scores
  
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../data/basketball.db")
+_same_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "basketball.db")
+_up_one   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../data/basketball.db")
+DB_PATH   = _same_dir if os.path.exists(_same_dir) else _up_one
  
 def connect_db():
     return sqlite3.connect(DB_PATH)
