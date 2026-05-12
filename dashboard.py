@@ -367,6 +367,14 @@ st.markdown("""
     <p>UW-River Falls — Plus/Minus Analytics Dashboard</p>
 </div>
 """, unsafe_allow_html=True)
+
+# -------------------------------------------------------------------------
+# PASSWORD CHECK
+# -------------------------------------------------------------------------
+password = st.text_input("Enter password", type="password")
+if password != st.secrets["password"]:
+    st.warning("Please enter the correct password.")
+    st.stop()
  
 # -------------------------------------------------------------------------
 # LOAD BASE DATA
