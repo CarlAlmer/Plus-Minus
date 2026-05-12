@@ -243,7 +243,7 @@ def _compute_lineup_minutes(conn, game_ids) -> dict:
  
  
 @st.cache_data
-def load_lineups(game_ids: tuple):
+def load_lineups(game_ids: tuple, _version: int = 2):
     if not game_ids:
         return pd.DataFrame()
     conn = connect_db()
