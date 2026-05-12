@@ -171,17 +171,18 @@ def _clock_to_seconds(period: int, clock_str: str) -> float:
  
  
 def _compute_lineup_minutes(conn, game_ids) -> dict:
-    """Return {lineup_id: total_minutes} across the given games."""
+    """Return {lineup_id: total_minutes} across the given games.
+ 
+    Uses period_start (20:00 / 5:00) and period_end (0:00) sentinel events
+    injected by parse_events.py so every minute of every period is captured
+    exactly — no manual game-end guessing needed.
+    """
     ph = ",".join("?" * len(game_ids))
     cursor = conn.cursor()
  
-    # Get max period per game to know where the game ends
-    cursor.execute(
-        f"SELECT game_id, MAX(period) FROM events WHERE game_id IN ({ph}) GROUP BY game_id",
-        list(game_ids)
-    )
-    max_period = {r[0]: r[1] for r in cursor.fetchall()}
- 
+    # Pull all lineup_states rows joined with their event clock.
+    # period_start and period_end rows are included because lineup_states
+    # has a row for every event, giving us the exact start/end anchors.
     cursor.execute(f"""
         SELECT ls.game_id, ls.lineup_id, ls.event_num, e.period, e.clock
         FROM lineup_states ls
@@ -191,18 +192,30 @@ def _compute_lineup_minutes(conn, game_ids) -> dict:
     """, list(game_ids))
     rows = cursor.fetchall()
  
+    # Also pull period_end events so we can close the last lineup in each game
+    cursor.execute(f"""
+        SELECT game_id, period, clock
+        FROM events
+        WHERE game_id IN ({ph}) AND event_type = 'period_end'
+        ORDER BY game_id, event_num
+    """, list(game_ids))
+    # Build {game_id: last_period_end_elapsed}
+    game_end_secs: dict = {}
+    for gid, period, clock in cursor.fetchall():
+        elapsed = _clock_to_seconds(period, clock)
+        game_end_secs[gid] = elapsed  # last one wins = end of game
+ 
     lineup_secs: dict = {}
-    prev_game = None
-    prev_lid  = None
+    prev_game    = None
+    prev_lid     = None
     prev_elapsed = None
  
     for game_id, lineup_id, event_num, period, clock in rows:
         elapsed = _clock_to_seconds(period, clock)
  
-        # New game — close previous game's last stint
+        # New game — close previous game last stint using period_end anchor
         if game_id != prev_game and prev_lid is not None:
-            mp = max_period.get(prev_game, 2)
-            game_end = 40 * 60 if mp <= 2 else 40 * 60 + (mp - 2) * 5 * 60
+            game_end = game_end_secs.get(prev_game, prev_elapsed)
             dur = game_end - prev_elapsed
             if dur > 0:
                 lineup_secs[prev_lid] = lineup_secs.get(prev_lid, 0) + dur
@@ -219,10 +232,9 @@ def _compute_lineup_minutes(conn, game_ids) -> dict:
         prev_game = game_id
         prev_lid  = lineup_id
  
-    # Close very last stint
+    # Close very last stint using period_end anchor
     if prev_lid is not None:
-        mp = max_period.get(prev_game, 2)
-        game_end = 40 * 60 if mp <= 2 else 40 * 60 + (mp - 2) * 5 * 60
+        game_end = game_end_secs.get(prev_game, prev_elapsed)
         dur = game_end - prev_elapsed
         if dur > 0:
             lineup_secs[prev_lid] = lineup_secs.get(prev_lid, 0) + dur
@@ -367,7 +379,7 @@ st.markdown("""
     <p>UW-River Falls — Plus/Minus Analytics Dashboard</p>
 </div>
 """, unsafe_allow_html=True)
-
+ 
 # -------------------------------------------------------------------------
 # PASSWORD CHECK
 # -------------------------------------------------------------------------
