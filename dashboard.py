@@ -85,6 +85,13 @@ def style_result(val):
     if val == "W": return "color: green; font-weight: 700"
     if val == "L": return "color: #C8102E; font-weight: 700"
     return ""
+
+def fmt_time(minutes):
+    """Decimal minutes -> 'M:SS' (e.g. 7.62 -> '7:37'). Display only; data stays numeric."""
+    if pd.isna(minutes):
+        return "—"
+    m, s = divmod(int(round(float(minutes) * 60)), 60)
+    return f"{m}:{s:02d}"
  
 EVENT_LABELS = {
     "made_2pt": "Made 2PT",       "made_3pt": "Made 3PT",     "made_ft": "Made FT",
@@ -173,7 +180,7 @@ def _clock_to_seconds(period: int, clock_str: str) -> float:
 def _compute_lineup_minutes(conn, game_ids) -> dict:
     """Return {lineup_id: total_minutes} across the given games.
  
-    Uses period_start (20:00 / 5:00) and period_end (0:00) sentinel events
+    Uses period_start (20:00 / 05:00) and period_end (00:00) sentinel events
     injected by parse_events.py so every minute of every period is captured
     exactly — no manual game-end guessing needed.
     """
@@ -332,7 +339,7 @@ def show_player_pm_table(agg: pd.DataFrame):
                "pm_per_40","pm_per_stint","points","pts_per_40",
                "assists","ast_per_40"]].copy()
     pm = pm.sort_values("plus_minus", ascending=False)
-    pm.columns = ["Player","Games","Plus/Minus","Minutes","Stints",
+    pm.columns = ["Player","Games","Plus/Minus","Time","Stints",
                   "Plus/Minus per 40","Plus/Minus per Stint",
                   "Points","Points per 40","Assists","Assists per 40"]
     st.dataframe(
@@ -340,7 +347,7 @@ def show_player_pm_table(agg: pd.DataFrame):
             .map(style_pm, subset=["Plus/Minus","Plus/Minus per 40","Plus/Minus per Stint"])
             .format({
                 "Plus/Minus":           "{:+d}",
-                "Minutes":              "{:.2f}",
+                "Time":                 fmt_time,
                 "Plus/Minus per 40":    "{:+.2f}",
                 "Plus/Minus per Stint": "{:+.2f}",
                 "Points per 40":        "{:.2f}",
@@ -503,7 +510,7 @@ with tab_games:
                 "ft_makes","ft_attempts","ft_percentage",
             ]].copy()
             gd.columns = [
-                "Player","Plus/Minus","Minutes","Stints","Plus/Minus per Stint",
+                "Player","Plus/Minus","Time","Stints","Plus/Minus per Stint",
                 "Points","Assists","Rebounds","Steals","Blocks","Turnovers","Fouls",
                 "FG Made","FG Att","FG %","3PT Made","3PT Att","3PT %",
                 "FT Made","FT Att","FT %",
@@ -513,7 +520,7 @@ with tab_games:
                     .map(style_pm, subset=["Plus/Minus","Plus/Minus per Stint"])
                     .format({
                         "Plus/Minus":           "{:+d}",
-                        "Minutes":              "{:.2f}",
+                        "Time":                 fmt_time,
                         "Plus/Minus per Stint": "{:+.2f}",
                         "FG %": "{:.2f}", "3PT %": "{:.2f}", "FT %": "{:.2f}",
                     }, na_rep="—"),
@@ -675,13 +682,13 @@ with tab_lineups:
             st.warning("No lineups match the selected filters.")
         else:
             disp_lin = lin[["Lineup","games","minutes","pts_for","pts_against","plus_minus","pm_per_40"]].copy()
-            disp_lin.columns = ["Lineup","Games","Minutes","Pts For","Pts Against","Plus/Minus","Plus/Minus per 40"]
+            disp_lin.columns = ["Lineup","Games","Time","Pts For","Pts Against","Plus/Minus","Plus/Minus per 40"]
             st.dataframe(
                 disp_lin.style
                     .map(style_pm, subset=["Plus/Minus","Plus/Minus per 40"])
                     .format({
                         "Plus/Minus":        "{:+d}",
-                        "Minutes":           "{:.1f}",
+                        "Time":              fmt_time,
                         "Plus/Minus per 40": "{:+.2f}",
                     }, na_rep="—"),
                 use_container_width=True, hide_index=True,

@@ -74,6 +74,12 @@ EVENT_PRIORITY = {
     # so the player who earned the trip to the line receives the plus/minus credit.
     "sub_in":           4,   # Player entering the game
     "sub_out":          3,   # Player leaving the game
+
+    # --- Period sentinels: pinned to the edges of their timestamp bucket ---
+    # They share the bucket with real events at 20:00 / 05:00 / 00:00, so the
+    # start must always sort first and the end must always sort last.
+    "period_start":     0,
+    "period_end":       5,
 }
  
  
@@ -223,9 +229,10 @@ def classify_event_type(lower_line: str) -> Tuple[str, int]:
  
 def extract_clock(line: str) -> Optional[str]:
     # Pull the first MM:SS timestamp found in the line (e.g. "15:32")
-    match = re.search(r"(\d{1,2}:\d{2})", line)
+    # Minutes are zero-padded so every clock in the DB is uniformly MM:SS
+    match = re.search(r"(\d{1,2}):(\d{2})", line)
     if match:
-        return match.group(1)
+        return f"{int(match.group(1)):02d}:{match.group(2)}"
     return None
  
  
@@ -430,7 +437,7 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
             # Close the first half
             if current_period == 1:
                 parsed_events.append({
-                    "game_id": game_id, "period": 1, "clock": "0:00",
+                    "game_id": game_id, "period": 1, "clock": "00:00",
                     "team": None, "player": None, "event_type": "period_end",
                     "points": 0, "description": "End of 1st Half",
                 })
@@ -447,7 +454,7 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
         if clean == "OT Play By Play" or (clean.startswith("OT") and clean.endswith("Play By Play")):
             # Close the previous period
             if current_period is not None:
-                end_clock = "0:00"
+                end_clock = "00:00"
                 end_desc  = f"End of Period {current_period}"
                 parsed_events.append({
                     "game_id": game_id, "period": current_period, "clock": end_clock,
@@ -456,9 +463,9 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
                 })
             current_period = (current_period or 2) + 1
             in_pbp_section = True
-            current_clock = "5:00"
+            current_clock = "05:00"
             parsed_events.append({
-                "game_id": game_id, "period": current_period, "clock": "5:00",
+                "game_id": game_id, "period": current_period, "clock": "05:00",
                 "team": None, "player": None, "event_type": "period_start",
                 "points": 0, "description": f"Start of OT{current_period - 2}",
             })
@@ -498,9 +505,9 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
         # Note: event_num is intentionally omitted here; sort_events_by_priority sets it
         parsed_events.append(event)
  
-    # Inject a period_end at 0:00 for the final period of the game
+    # Inject a period_end at 00:00 for the final period of the game
     if current_period is not None and in_pbp_section:
-        end_clock = "0:00"
+        end_clock = "00:00"
         if current_period <= 2:
             end_desc = f"End of {'1st' if current_period == 1 else '2nd'} Half"
         else:
