@@ -418,19 +418,50 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
         if clean == "1st Half Play By Play":
             current_period = 1
             in_pbp_section = True
-            current_clock = None   # Reset clock at the start of each half
+            current_clock = "20:00"
+            parsed_events.append({
+                "game_id": game_id, "period": 1, "clock": "20:00",
+                "team": None, "player": None, "event_type": "period_start",
+                "points": 0, "description": "Start of 1st Half",
+            })
             continue
  
         if clean == "2nd Half Play By Play":
+            # Close the first half
+            if current_period == 1:
+                parsed_events.append({
+                    "game_id": game_id, "period": 1, "clock": "0:00",
+                    "team": None, "player": None, "event_type": "period_end",
+                    "points": 0, "description": "End of 1st Half",
+                })
             current_period = 2
             in_pbp_section = True
-            current_clock = None
+            current_clock = "20:00"
+            parsed_events.append({
+                "game_id": game_id, "period": 2, "clock": "20:00",
+                "team": None, "player": None, "event_type": "period_start",
+                "points": 0, "description": "Start of 2nd Half",
+            })
             continue
  
-        if clean == "OT Play By Play":
-            current_period = 3
+        if clean == "OT Play By Play" or (clean.startswith("OT") and clean.endswith("Play By Play")):
+            # Close the previous period
+            if current_period is not None:
+                end_clock = "0:00"
+                end_desc  = f"End of Period {current_period}"
+                parsed_events.append({
+                    "game_id": game_id, "period": current_period, "clock": end_clock,
+                    "team": None, "player": None, "event_type": "period_end",
+                    "points": 0, "description": end_desc,
+                })
+            current_period = (current_period or 2) + 1
             in_pbp_section = True
-            current_clock = None
+            current_clock = "5:00"
+            parsed_events.append({
+                "game_id": game_id, "period": current_period, "clock": "5:00",
+                "team": None, "player": None, "event_type": "period_start",
+                "points": 0, "description": f"Start of OT{current_period - 2}",
+            })
             continue
  
         # Skip everything before the first play-by-play section header
@@ -467,14 +498,27 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
         # Note: event_num is intentionally omitted here; sort_events_by_priority sets it
         parsed_events.append(event)
  
+    # Inject a period_end at 0:00 for the final period of the game
+    if current_period is not None and in_pbp_section:
+        end_clock = "0:00"
+        if current_period <= 2:
+            end_desc = f"End of {'1st' if current_period == 1 else '2nd'} Half"
+        else:
+            end_desc = f"End of OT{current_period - 2}"
+        parsed_events.append({
+            "game_id": game_id, "period": current_period, "clock": end_clock,
+            "team": None, "player": None, "event_type": "period_end",
+            "points": 0, "description": end_desc,
+        })
+ 
     # Apply priority sort and re-assign event_num
     parsed_events = sort_events_by_priority(parsed_events)
-
+ 
     # Write the sorted, correctly numbered events to the database
     insert_parsed_events(conn, parsed_events)
     conn.close()
-
-
+ 
+ 
 def get_unparsed_game_ids(conn: sqlite3.Connection) -> List[int]:
     # Return every game_id that has raw lines loaded but no events parsed yet.
     # This lets __main__ automatically pick up any game that bulk_import.py
@@ -490,8 +534,8 @@ def get_unparsed_game_ids(conn: sqlite3.Connection) -> List[int]:
         """
     )
     return [row[0] for row in cursor.fetchall()]
-
-
+ 
+ 
 if __name__ == "__main__":
     # Automatically parse every game that has raw lines but no events yet.
     # No game_id needs to be specified — this picks up whatever bulk_import.py
@@ -499,6 +543,6 @@ if __name__ == "__main__":
     conn = connect_db()
     unparsed_ids = get_unparsed_game_ids(conn)
     conn.close()
-
+ 
     for game_id in unparsed_ids:
         parse_game_events(game_id=game_id, delete_existing=True)
