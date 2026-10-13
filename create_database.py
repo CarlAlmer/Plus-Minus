@@ -169,6 +169,39 @@ CREATE TABLE IF NOT EXISTS player_season_stats (
 """)
 
 
+# -------------------------
+# roster appearances (self-building roster)
+#
+# One row per (player, season, game) a UWRF player is confirmed to have
+# appeared in a box score for. Populated automatically by box_score_stats.py
+# using the team-name label on each box score table - no hand-typed player
+# list required. See roster.py for details.
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS roster_appearances (
+    player_name TEXT NOT NULL,
+    season      TEXT NOT NULL,
+    game_id     INTEGER NOT NULL,
+    team        TEXT NOT NULL DEFAULT 'MBB',   -- MBB = men's, WBB = women's
+    PRIMARY KEY (player_name, season, game_id)
+)
+""")
+
+# A season's roster, derived on the fly from roster_appearances - always
+# up to date, nothing to maintain by hand.
+cursor.execute("""
+CREATE VIEW IF NOT EXISTS roster AS
+SELECT
+    team,
+    player_name,
+    season,
+    COUNT(DISTINCT game_id) AS games_played,
+    MIN(game_id) AS first_game_id,
+    MAX(game_id) AS last_game_id
+FROM roster_appearances
+GROUP BY team, player_name, season
+""")
+
 conn.commit()
 conn.close()
  

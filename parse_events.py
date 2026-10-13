@@ -1,34 +1,18 @@
 import sqlite3
 import re
 from itertools import groupby
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
+
+import roster
  
  
 # Path to the local SQLite database
 DB_PATH = "data/basketball.db"
  
-# Known UWRF roster — used to identify which team a player belongs to
-TEAM_PLAYERS = {
-    "HAVLIK,OWEN",
-    "THOMPSON,MICAH",
-    "LEIFKER,JACK",
-    "RALPH,GAVIN",
-    "WANGUHU,JEREMY",
-    "POSTEL,REGGIE",
-    "CLEARY,DANIEL",
-    "TENGBLAD,DREW",
-    "TENGBLAD,REID",
-    "VARIANO,BRODY",
-    "CLAUSEN,EVAN",
-    "LOEGERING,CODY",
-    "SCHULT,WESTON",
-    "JOHNSON,IAN",
-    "STEINKE,KYLE",
-    "ROGGE,EVAN",
-    "NELSON,RILEY",
-    "COGDILL,NOLAN",
-    "HERICKHOFF,CHAD"
-}
+# NOTE: the old hardcoded TEAM_PLAYERS name list is gone. Team membership
+# is now looked up against the self-building roster (see roster.py),
+# which box_score_stats.py populates from the team-name label on each
+# game's box score - no manual per-season edits needed here anymore.
  
 # ---------------------------------------------------------------------------
 # Event priority map — controls ordering within identical (period, clock) groups.
@@ -74,12 +58,6 @@ EVENT_PRIORITY = {
     # so the player who earned the trip to the line receives the plus/minus credit.
     "sub_in":           4,   # Player entering the game
     "sub_out":          3,   # Player leaving the game
-
-    # --- Period sentinels: pinned to the edges of their timestamp bucket ---
-    # They share the bucket with real events at 20:00 / 05:00 / 00:00, so the
-    # start must always sort first and the end must always sort last.
-    "period_start":     0,
-    "period_end":       5,
 }
  
  
@@ -124,12 +102,14 @@ def normalize_player_name(name: Optional[str]) -> Optional[str]:
     return re.sub(r",\s+", ",", name.strip().upper())
  
  
-def identify_team(player: Optional[str]) -> Optional[str]:
-    # Check whether a player is on the UWRF roster; if not, treat them as Opponent
+def identify_team(player: Optional[str], uwrf_names: Set[str]) -> Optional[str]:
+    # Check whether a player is on this season's self-built UWRF roster;
+    # if not, treat them as Opponent. uwrf_names is precomputed once per
+    # game by parse_game_events (see roster.get_roster_for_season).
     player = normalize_player_name(player)
     if not player:
         return None
-    if player in TEAM_PLAYERS:
+    if player in uwrf_names:
         return "UWRF"
     return "Opponent"
  
@@ -229,10 +209,9 @@ def classify_event_type(lower_line: str) -> Tuple[str, int]:
  
 def extract_clock(line: str) -> Optional[str]:
     # Pull the first MM:SS timestamp found in the line (e.g. "15:32")
-    # Minutes are zero-padded so every clock in the DB is uniformly MM:SS
-    match = re.search(r"(\d{1,2}):(\d{2})", line)
+    match = re.search(r"(\d{1,2}:\d{2})", line)
     if match:
-        return f"{int(match.group(1)):02d}:{match.group(2)}"
+        return match.group(1)
     return None
  
  
@@ -272,7 +251,7 @@ def looks_like_event_content(line: str) -> bool:
     return any(k in lower_line for k in keywords)
  
  
-def parse_line(line: str, inherited_clock: Optional[str]) -> Dict:
+def parse_line(line: str, inherited_clock: Optional[str], uwrf_names: Set[str]) -> Dict:
     # Convert a single raw PDF line into an event dictionary (no event_num yet —
     # that is assigned later, after sorting)
     clean_line = normalize_spaces(line)
@@ -289,7 +268,7 @@ def parse_line(line: str, inherited_clock: Optional[str]) -> Dict:
     return {
         "clock":       clock,
         "period":      None,        # Will be filled in by the caller from context
-        "team":        identify_team(player),
+        "team":        identify_team(player, uwrf_names),
         "player":      player,
         "event_type":  event_type,
         "points":      points,
@@ -388,7 +367,22 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
     if delete_existing:
         # Remove old events so re-importing a game doesn't create duplicates
         delete_existing_events_for_game(conn, game_id)
- 
+
+    # Resolve this game's season and its self-built UWRF roster once, up
+    # front, rather than querying the DB per event. run_all.py runs
+    # box_score_stats.build_roster_for_all_games() before this function, so
+    # the roster for this game's own box score is already in place.
+    season = roster.get_season_for_game(conn, game_id)
+    team = roster.get_team_for_game(conn, game_id)   # MBB or WBB
+    uwrf_names = roster.get_roster_for_season(conn, season, team)
+    if not uwrf_names:
+        print(
+            f"WARNING: no roster found for season {season!r} (game_id {game_id}). "
+            "Falling back to the full all-time roster - make sure "
+            "box_score_stats.build_roster_for_all_games() has run first."
+        )
+        uwrf_names = roster.get_full_roster(conn, team)
+
     # Load every raw PDF line for this game from the database
     raw_lines = get_raw_lines_for_game(conn, game_id)
  
@@ -437,7 +431,7 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
             # Close the first half
             if current_period == 1:
                 parsed_events.append({
-                    "game_id": game_id, "period": 1, "clock": "00:00",
+                    "game_id": game_id, "period": 1, "clock": "0:00",
                     "team": None, "player": None, "event_type": "period_end",
                     "points": 0, "description": "End of 1st Half",
                 })
@@ -454,7 +448,7 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
         if clean == "OT Play By Play" or (clean.startswith("OT") and clean.endswith("Play By Play")):
             # Close the previous period
             if current_period is not None:
-                end_clock = "00:00"
+                end_clock = "0:00"
                 end_desc  = f"End of Period {current_period}"
                 parsed_events.append({
                     "game_id": game_id, "period": current_period, "clock": end_clock,
@@ -463,9 +457,9 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
                 })
             current_period = (current_period or 2) + 1
             in_pbp_section = True
-            current_clock = "05:00"
+            current_clock = "5:00"
             parsed_events.append({
-                "game_id": game_id, "period": current_period, "clock": "05:00",
+                "game_id": game_id, "period": current_period, "clock": "5:00",
                 "team": None, "player": None, "event_type": "period_start",
                 "points": 0, "description": f"Start of OT{current_period - 2}",
             })
@@ -493,7 +487,7 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
             current_clock = line_clock
  
         # Parse the line into an event dict (event_num not set yet)
-        event = parse_line(clean, current_clock)
+        event = parse_line(clean, current_clock, uwrf_names)
  
         # Discard events with no resolvable clock — we can't place them in order
         if event["clock"] is None:
@@ -505,9 +499,9 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
         # Note: event_num is intentionally omitted here; sort_events_by_priority sets it
         parsed_events.append(event)
  
-    # Inject a period_end at 00:00 for the final period of the game
+    # Inject a period_end at 0:00 for the final period of the game
     if current_period is not None and in_pbp_section:
-        end_clock = "00:00"
+        end_clock = "0:00"
         if current_period <= 2:
             end_desc = f"End of {'1st' if current_period == 1 else '2nd'} Half"
         else:
