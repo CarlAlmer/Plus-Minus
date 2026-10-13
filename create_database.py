@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS games (
     game_id INTEGER PRIMARY KEY AUTOINCREMENT,
     game_date TEXT,
     opponent TEXT,
+    conference BOOLEAN,
     location TEXT,
     source_url TEXT
 )

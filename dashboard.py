@@ -11,7 +11,9 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from compute_plus_minus import parse_starters_and_scores
  
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../data/basketball.db")
+_same_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "basketball.db")
+_up_one   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../data/basketball.db")
+DB_PATH   = _same_dir if os.path.exists(_same_dir) else _up_one
  
 def connect_db():
     return sqlite3.connect(DB_PATH)
@@ -83,6 +85,13 @@ def style_result(val):
     if val == "W": return "color: green; font-weight: 700"
     if val == "L": return "color: #C8102E; font-weight: 700"
     return ""
+
+def fmt_time(minutes):
+    """Decimal minutes -> 'M:SS' (e.g. 7.62 -> '7:37'). Display only; data stays numeric."""
+    if pd.isna(minutes):
+        return "—"
+    m, s = divmod(int(round(float(minutes) * 60)), 60)
+    return f"{m}:{s:02d}"
  
 EVENT_LABELS = {
     "made_2pt": "Made 2PT",       "made_3pt": "Made 3PT",     "made_ft": "Made FT",
@@ -169,17 +178,18 @@ def _clock_to_seconds(period: int, clock_str: str) -> float:
  
  
 def _compute_lineup_minutes(conn, game_ids) -> dict:
-    """Return {lineup_id: total_minutes} across the given games."""
+    """Return {lineup_id: total_minutes} across the given games.
+ 
+    Uses period_start (20:00 / 05:00) and period_end (00:00) sentinel events
+    injected by parse_events.py so every minute of every period is captured
+    exactly — no manual game-end guessing needed.
+    """
     ph = ",".join("?" * len(game_ids))
     cursor = conn.cursor()
  
-    # Get max period per game to know where the game ends
-    cursor.execute(
-        f"SELECT game_id, MAX(period) FROM events WHERE game_id IN ({ph}) GROUP BY game_id",
-        list(game_ids)
-    )
-    max_period = {r[0]: r[1] for r in cursor.fetchall()}
- 
+    # Pull all lineup_states rows joined with their event clock.
+    # period_start and period_end rows are included because lineup_states
+    # has a row for every event, giving us the exact start/end anchors.
     cursor.execute(f"""
         SELECT ls.game_id, ls.lineup_id, ls.event_num, e.period, e.clock
         FROM lineup_states ls
@@ -189,18 +199,30 @@ def _compute_lineup_minutes(conn, game_ids) -> dict:
     """, list(game_ids))
     rows = cursor.fetchall()
  
+    # Also pull period_end events so we can close the last lineup in each game
+    cursor.execute(f"""
+        SELECT game_id, period, clock
+        FROM events
+        WHERE game_id IN ({ph}) AND event_type = 'period_end'
+        ORDER BY game_id, event_num
+    """, list(game_ids))
+    # Build {game_id: last_period_end_elapsed}
+    game_end_secs: dict = {}
+    for gid, period, clock in cursor.fetchall():
+        elapsed = _clock_to_seconds(period, clock)
+        game_end_secs[gid] = elapsed  # last one wins = end of game
+ 
     lineup_secs: dict = {}
-    prev_game = None
-    prev_lid  = None
+    prev_game    = None
+    prev_lid     = None
     prev_elapsed = None
  
     for game_id, lineup_id, event_num, period, clock in rows:
         elapsed = _clock_to_seconds(period, clock)
  
-        # New game — close previous game's last stint
+        # New game — close previous game last stint using period_end anchor
         if game_id != prev_game and prev_lid is not None:
-            mp = max_period.get(prev_game, 2)
-            game_end = 40 * 60 if mp <= 2 else 40 * 60 + (mp - 2) * 5 * 60
+            game_end = game_end_secs.get(prev_game, prev_elapsed)
             dur = game_end - prev_elapsed
             if dur > 0:
                 lineup_secs[prev_lid] = lineup_secs.get(prev_lid, 0) + dur
@@ -217,10 +239,9 @@ def _compute_lineup_minutes(conn, game_ids) -> dict:
         prev_game = game_id
         prev_lid  = lineup_id
  
-    # Close very last stint
+    # Close very last stint using period_end anchor
     if prev_lid is not None:
-        mp = max_period.get(prev_game, 2)
-        game_end = 40 * 60 if mp <= 2 else 40 * 60 + (mp - 2) * 5 * 60
+        game_end = game_end_secs.get(prev_game, prev_elapsed)
         dur = game_end - prev_elapsed
         if dur > 0:
             lineup_secs[prev_lid] = lineup_secs.get(prev_lid, 0) + dur
@@ -229,7 +250,7 @@ def _compute_lineup_minutes(conn, game_ids) -> dict:
  
  
 @st.cache_data
-def load_lineups(game_ids: tuple):
+def load_lineups(game_ids: tuple, _version: int = 2):
     if not game_ids:
         return pd.DataFrame()
     conn = connect_db()
@@ -318,7 +339,7 @@ def show_player_pm_table(agg: pd.DataFrame):
                "pm_per_40","pm_per_stint","points","pts_per_40",
                "assists","ast_per_40"]].copy()
     pm = pm.sort_values("plus_minus", ascending=False)
-    pm.columns = ["Player","Games","Plus/Minus","Minutes","Stints",
+    pm.columns = ["Player","Games","Plus/Minus","Time","Stints",
                   "Plus/Minus per 40","Plus/Minus per Stint",
                   "Points","Points per 40","Assists","Assists per 40"]
     st.dataframe(
@@ -326,7 +347,7 @@ def show_player_pm_table(agg: pd.DataFrame):
             .map(style_pm, subset=["Plus/Minus","Plus/Minus per 40","Plus/Minus per Stint"])
             .format({
                 "Plus/Minus":           "{:+d}",
-                "Minutes":              "{:.2f}",
+                "Time":                 fmt_time,
                 "Plus/Minus per 40":    "{:+.2f}",
                 "Plus/Minus per Stint": "{:+.2f}",
                 "Points per 40":        "{:.2f}",
@@ -365,6 +386,14 @@ st.markdown("""
     <p>UW-River Falls — Plus/Minus Analytics Dashboard</p>
 </div>
 """, unsafe_allow_html=True)
+ 
+# -------------------------------------------------------------------------
+# PASSWORD CHECK
+# -------------------------------------------------------------------------
+password = st.text_input("Enter password", type="password")
+if password != st.secrets["password"]:
+    st.warning("Please enter the correct password.")
+    st.stop()
  
 # -------------------------------------------------------------------------
 # LOAD BASE DATA
@@ -481,7 +510,7 @@ with tab_games:
                 "ft_makes","ft_attempts","ft_percentage",
             ]].copy()
             gd.columns = [
-                "Player","Plus/Minus","Minutes","Stints","Plus/Minus per Stint",
+                "Player","Plus/Minus","Time","Stints","Plus/Minus per Stint",
                 "Points","Assists","Rebounds","Steals","Blocks","Turnovers","Fouls",
                 "FG Made","FG Att","FG %","3PT Made","3PT Att","3PT %",
                 "FT Made","FT Att","FT %",
@@ -491,7 +520,7 @@ with tab_games:
                     .map(style_pm, subset=["Plus/Minus","Plus/Minus per Stint"])
                     .format({
                         "Plus/Minus":           "{:+d}",
-                        "Minutes":              "{:.2f}",
+                        "Time":                 fmt_time,
                         "Plus/Minus per Stint": "{:+.2f}",
                         "FG %": "{:.2f}", "3PT %": "{:.2f}", "FT %": "{:.2f}",
                     }, na_rep="—"),
@@ -653,13 +682,13 @@ with tab_lineups:
             st.warning("No lineups match the selected filters.")
         else:
             disp_lin = lin[["Lineup","games","minutes","pts_for","pts_against","plus_minus","pm_per_40"]].copy()
-            disp_lin.columns = ["Lineup","Games","Minutes","Pts For","Pts Against","Plus/Minus","Plus/Minus per 40"]
+            disp_lin.columns = ["Lineup","Games","Time","Pts For","Pts Against","Plus/Minus","Plus/Minus per 40"]
             st.dataframe(
                 disp_lin.style
                     .map(style_pm, subset=["Plus/Minus","Plus/Minus per 40"])
                     .format({
                         "Plus/Minus":        "{:+d}",
-                        "Minutes":           "{:.1f}",
+                        "Time":              fmt_time,
                         "Plus/Minus per 40": "{:+.2f}",
                     }, na_rep="—"),
                 use_container_width=True, hide_index=True,
