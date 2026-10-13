@@ -1,117 +1,208 @@
-
-# run_all.py
-
-import os
 import sqlite3
-import runpy
+ 
+# this will create the database file if it doesn't exist
+conn = sqlite3.connect("data/basketball.db")
+ 
+cursor = conn.cursor()
+ 
+# -------------------------
+# games table
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS games (
+    game_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_date TEXT,
+    opponent TEXT,
+    conference BOOLEAN,
+    location TEXT,
+    source_url TEXT
+)
+""")
+ 
+# -------------------------
+# raw play-by-play lines
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS raw_lines (
+    line_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER,
+    line_text TEXT
+)
+""")
+ 
+# -------------------------
+# parsed events
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER,
+    event_num INTEGER,
+    period INTEGER,
+    clock TEXT,
+    team TEXT,
+    player TEXT,
+    event_type TEXT,
+    points INTEGER,
+    description TEXT
+)
+""")
+ 
+# -------------------------
+# distinct 5-man lineups
+#
+# Each row represents a unique combination of 5 players, stored sorted
+# alphabetically so the same group always maps to the same lineup_id
+# regardless of the order players subbed in at runtime.
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS lineups (
+    lineup_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    player1     TEXT NOT NULL,
+    player2     TEXT NOT NULL,
+    player3     TEXT NOT NULL,
+    player4     TEXT NOT NULL,
+    player5     TEXT NOT NULL,
+    UNIQUE (player1, player2, player3, player4, player5)
+)
+""")
+ 
+# -------------------------
+# lineup states
+#
+# One row per event, recording which players were on the floor.
+# lineup_id references the lineups table when all 5 slots are filled;
+# it is NULL whenever fewer than 5 players are on the floor for that event.
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS lineup_states (
+    state_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id     INTEGER,
+    event_num   INTEGER,
+    player1     TEXT,
+    player2     TEXT,
+    player3     TEXT,
+    player4     TEXT,
+    player5     TEXT,
+    lineup_id   INTEGER REFERENCES lineups (lineup_id)
+)
+""")
+ 
+# -------------------------
+# player stats per game
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS player_game_stats (
+    stat_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER,
+    player_name TEXT,
+    plus_minus INTEGER,
+    min_played FLOAT,
+    stints INTEGER,
+    fg_makes INTEGER,
+    fg_attempts INTEGER,
+    fg_percentage FLOAT,
+    pt3_makes INTEGER,
+    pt3_attempts INTEGER,
+    pt3_percentage FLOAT,
+    ft_makes INTEGER,
+    ft_attempts INTEGER,
+    ft_percentage FLOAT,
+    points INTEGER,
+    assists INTEGER,
+    orb INTEGER,
+    drb INTEGER,
+    rebounds INTEGER,
+    fouls INTEGER,
+    turnovers INTEGER,
+    blocks INTEGER,
+    steals INTEGER 
+        
+)
+""")
 
-# Make sure all files use the same basketball.db
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-os.chdir(BASE_DIR)
+# -------------------------
+# plus minus seaonal stats
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS season_plus_minus_stats (
+    player_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_name TEXT,
+    games_played INTEGER,
+    plus_minus INTEGER,
+    min_played FLOAT,
+    plus_minus_per_40 FLOAT,
+    stints INTEGER,
+    plus_minus_per_stint FLOAT,
+    points INTEGER,
+    points_per_40 FLOAT,
+    assists INTEGER,
+    assists_per_40 FLOAT
+    
+)
+""")
 
-DB_PATH = os.path.join(BASE_DIR, "basketball.db")
-
-
-def count_rows(table_name):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
-
-
-def get_all_game_ids():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT game_id FROM games ORDER BY game_id")
-    game_ids = [row[0] for row in cursor.fetchall()]
-
-    conn.close()
-    return game_ids
-
-
-def show_counts(step_name):
-    print(f"\nDatabase check after {step_name}:")
-    for table in ["games", "raw_lines", "events", "lineups", "lineup_states", "player_game_stats"]:
-        try:
-            print(f"  {table}: {count_rows(table)} rows")
-        except Exception:
-            print(f"  {table}: table not found")
-
-
-def parse_events_for_all_games():
-    from parse_events import parse_game_events
-
-    game_ids = get_all_game_ids()
-
-    print(f"\nFound {len(game_ids)} games to parse events for.\n")
-
-    for game_id in game_ids:
-        print("==============================")
-        print(f"Parsing events for game_id {game_id}")
-        print("==============================")
-
-        try:
-            parse_game_events(
-                game_id=game_id,
-                delete_existing=True
-            )
-        except Exception as e:
-            print(f"ERROR parsing events for game {game_id}: {e}\n")
+# -------------------------
+# player stats season totals
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS player_season_stats (
+    stat_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_name TEXT,
+    games_played INTEGER,
+    fg_makes INTEGER,
+    fg_attempts INTEGER,
+    fg_percentage FLOAT,
+    pt3_makes INTEGER,
+    pt3_attempts INTEGER,
+    pt3_percentage FLOAT,
+    ft_makes INTEGER,
+    ft_attempts INTEGER,
+    ft_percentage FLOAT,
+    rebounds INTEGER,
+    fouls INTEGER,
+    turnovers INTEGER,
+    blocks INTEGER,
+    steals INTEGER 
+        
+)
+""")
 
 
-def run_all():
-    print(f"Running from folder: {BASE_DIR}")
-    print(f"Using database: {DB_PATH}")
+# -------------------------
+# roster appearances (self-building roster)
+#
+# One row per (player, season, game) a UWRF player is confirmed to have
+# appeared in a box score for. Populated automatically by box_score_stats.py
+# using the team-name label on each box score table - no hand-typed player
+# list required. See roster.py for details.
+# -------------------------
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS roster_appearances (
+    player_name TEXT NOT NULL,
+    season      TEXT NOT NULL,
+    game_id     INTEGER NOT NULL,
+    team        TEXT NOT NULL DEFAULT 'MBB',   -- MBB = men's, WBB = women's
+    PRIMARY KEY (player_name, season, game_id)
+)
+""")
 
-    print("\nSTEP 1: Creating database/tables")
-    print("--------------------------------")
-    runpy.run_path(os.path.join(BASE_DIR, "create_database.py"))
-    show_counts("creating database")
+# A season's roster, derived on the fly from roster_appearances - always
+# up to date, nothing to maintain by hand.
+cursor.execute("""
+CREATE VIEW IF NOT EXISTS roster AS
+SELECT
+    team,
+    player_name,
+    season,
+    COUNT(DISTINCT game_id) AS games_played,
+    MIN(game_id) AS first_game_id,
+    MAX(game_id) AS last_game_id
+FROM roster_appearances
+GROUP BY team, player_name, season
+""")
 
-    print("\nSTEP 2: Importing games")
-    print("-----------------------")
-    from bulk_import import run_bulk_import
-    run_bulk_import()
-    show_counts("bulk import")
-
-    print("\nSTEP 3: Parsing play-by-play events")
-    print("-----------------------------------")
-    parse_events_for_all_games()
-    show_counts("parsing events")
-
-    if count_rows("events") == 0:
-        print("\nSTOPPED: events table is still empty.")
-        print("This means raw_lines were imported, but parse_events.py did not recognize the play-by-play section.")
-        return
-
-    print("\nSTEP 4: Computing plus/minus")
-    print("---------------------------")
-    from compute_plus_minus import compute_all_games_plus_minus
-    compute_all_games_plus_minus()
-    show_counts("plus/minus")
-
-    print("\nSTEP 5: Parsing box score stats")
-    print("-------------------------------")
-    from box_score_stats import parse_all_games
-    parse_all_games()
-    show_counts("box score stats")
-
-    print("\nSTEP 6: Computing stints")
-    print("------------------------")
-    from stints import compute_all_games_stints
-    compute_all_games_stints()
-    show_counts("stints")
-
-    print("\nSTEP 7: Computing season stats")
-    print("------------------------------")
-    from season_stat import compute_season_stats
-    compute_season_stats()
-
-    print("\nALL DONE. Database is fully updated.")
-
-
-if __name__ == "__main__":
-    run_all()
+conn.commit()
+conn.close()
+ 
+print("Database and tables created successfully")
