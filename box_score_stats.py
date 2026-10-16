@@ -111,15 +111,14 @@ def parse_player_line(clean: str) -> Optional[Dict]:
         if parts[idx].isdigit():
             idx += 1
 
-        # Name may be split into two tokens if there is a space after the comma
-        name = parts[idx]
+        # The name is every token up to the '*' / minutes: "Havlik,Owen", "Postel, Reggie",
+        # "Reeck ,Jake" (space before the comma) or "Van Scoy,Will" (two-word last name)
+        name_tokens = [parts[idx]]
         idx += 1
-
-        # If next token is not '*' and not a minute field, it is probably the
-        # second half of the player name, e.g. "Postel," + "Reggie"
-        if idx < len(parts) and parts[idx] != "*" and not re.fullmatch(r"\d+\+?", parts[idx]):
-            name = f"{name}{parts[idx]}"
+        while idx < len(parts) and parts[idx] != "*" and not re.fullmatch(r"\d+\+?", parts[idx]):
+            name_tokens.append(parts[idx])
             idx += 1
+        name = re.sub(r"\s*,\s*", ",", " ".join(name_tokens))
 
         # Starter marker
         if idx < len(parts) and parts[idx] == "*":
@@ -232,7 +231,7 @@ def extract_box_score_tables(lines: List[str]) -> List[Tuple[str, List[Dict]]]:
         clean = raw_line.strip()
 
         # Stop before half box score sections
-        if clean.startswith("1st Half Box Score") or clean.startswith("2nd Half Box Score"):
+        if clean.startswith(("1st Half Box Score", "2nd Half Box Score", "First Half Box Score", "Second Half Box Score")):
             reached_half_box_scores = True
 
         if reached_half_box_scores:
@@ -426,6 +425,38 @@ def parse_all_games() -> None:
 
     for game_id in game_ids:
         parse_game_box_score(game_id)
+
+    load_games_without_play_by_play()
+
+
+def load_games_without_play_by_play() -> None:
+    """Some box score PDFs have no play-by-play section (it was never posted).
+    Plus/minus, stints and lineups can't be worked out for those games, but the
+    box score numbers can still be kept. For each such game: remove anything the
+    play-by-play steps may have half-built, then store one row per UWRF player
+    with the box score stats and plus_minus / stints left empty (NULL)."""
+    conn = connect_db()
+    try:
+        game_ids = [
+            gid for gid in get_all_game_ids(conn)
+            if not any("play by play" in l.lower() for l in get_raw_lines(conn, gid))
+        ]
+        for gid in game_ids:
+            players = parse_box_score(conn, gid, get_raw_lines(conn, gid))
+            for table in ("lineup_states", "events", "player_game_stats"):
+                conn.execute(f"DELETE FROM {table} WHERE game_id = ?", (gid,))
+            for p in players:
+                conn.execute(
+                    "INSERT INTO player_game_stats (game_id, player_name, plus_minus, stints) "
+                    "VALUES (?, ?, NULL, NULL)",
+                    (gid, p["player_name"]),
+                )
+            conn.commit()
+            update_player_stats(conn, gid, players)
+            print(f"  game_id {gid}: no play-by-play in the PDF - kept {len(players)} players' "
+                  "box score stats, plus/minus left empty")
+    finally:
+        conn.close()
 
 
 # -----------------------------

@@ -2,7 +2,7 @@ import sqlite3
 
 # this path could be different things depending on where your code is stored on your computer
 # such as "data/basketball.db"
-DB_PATH = "basketball.db"
+DB_PATH = "data/basketball.db"
 
 
 def clear_all_tables():

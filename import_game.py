@@ -26,7 +26,7 @@ def extract_lines_from_pdf_url(pdf_url):
 
 
 def connect_db():
-    return sqlite3.connect("basketball.db")
+    return sqlite3.connect("data/basketball.db")
 
 
 def normalize_conference(conf):
