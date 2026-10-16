@@ -1,4 +1,4 @@
-# run_all.py
+﻿# run_all.py
 
 import os
 import sqlite3
