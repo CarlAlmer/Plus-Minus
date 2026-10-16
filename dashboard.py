@@ -15,8 +15,11 @@ _same_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "basketball
 _up_one   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../data/basketball.db")
 DB_PATH   = _same_dir if os.path.exists(_same_dir) else _up_one
  
-def connect_db():
-    return sqlite3.connect(DB_PATH)
+import hmac
+import new_games   # team settings, new-game checker, GitHub saving
+
+def connect_db(db_path=None):
+    return sqlite3.connect(db_path or DB_PATH)
  
 # -------------------------------------------------------------------------
 # PAGE CONFIG
@@ -26,7 +29,7 @@ _logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Uw_river_
 _logo = PILImage.open(_logo_path) if os.path.exists(_logo_path) else None
  
 st.set_page_config(
-    page_title="UWRF Men's Basketball",
+    page_title="UWRF Basketball Analytics",
     page_icon=_logo if _logo else "🏀",
     layout="wide",
 )
@@ -108,8 +111,8 @@ EVENT_LABELS = {
 # DATA LOADERS
 # -------------------------------------------------------------------------
 @st.cache_data
-def load_all_games():
-    conn = connect_db()
+def load_all_games(db_path: str):
+    conn = connect_db(db_path)
     games = pd.read_sql_query(
         "SELECT game_id, game_date, opponent, location, conference FROM games ORDER BY game_date",
         conn
@@ -139,10 +142,10 @@ def load_all_games():
  
  
 @st.cache_data
-def load_player_game_stats(game_ids: tuple):
+def load_player_game_stats(game_ids: tuple, db_path: str):
     if not game_ids:
         return pd.DataFrame()
-    conn = connect_db()
+    conn = connect_db(db_path)
     ph = ",".join("?" * len(game_ids))
     df = pd.read_sql_query(f"""
         SELECT pgs.game_id, g.game_date, g.opponent,
@@ -250,10 +253,10 @@ def _compute_lineup_minutes(conn, game_ids) -> dict:
  
  
 @st.cache_data
-def load_lineups(game_ids: tuple, _version: int = 2):
+def load_lineups(game_ids: tuple, db_path: str, _version: int = 2):
     if not game_ids:
         return pd.DataFrame()
-    conn = connect_db()
+    conn = connect_db(db_path)
     ph = ",".join("?" * len(game_ids))
     df = pd.read_sql_query(f"""
         SELECT l.lineup_id, l.player1, l.player2, l.player3, l.player4, l.player5,
@@ -283,8 +286,8 @@ def load_lineups(game_ids: tuple, _version: int = 2):
  
  
 @st.cache_data
-def load_events(game_id: int):
-    conn = connect_db()
+def load_events(game_id: int, db_path: str):
+    conn = connect_db(db_path)
     df = pd.read_sql_query("""
         SELECT e.event_num, e.period, e.clock, e.team,
                e.player, e.event_type, e.points, e.description, g.opponent
@@ -300,10 +303,15 @@ def load_events(game_id: int):
 def aggregate_player_stats(pgs: pd.DataFrame) -> pd.DataFrame:
     if pgs.empty:
         return pd.DataFrame()
+    pgs = pgs.copy()
+    # minutes from games that have plus/minus (games with no play-by-play have none),
+    # so plus/minus per 40 is not watered down by those games
+    pgs["pm_minutes"] = pgs["min_played"].where(pgs["plus_minus"].notna(), 0)
     agg = pgs.groupby("player_name").agg(
         games_played = ("game_id",      "nunique"),
         plus_minus   = ("plus_minus",   "sum"),
         min_played   = ("min_played",   "sum"),
+        pm_minutes   = ("pm_minutes",   "sum"),
         stints       = ("stints",       "sum"),
         points       = ("points",       "sum"),
         assists      = ("assists",      "sum"),
@@ -326,7 +334,7 @@ def aggregate_player_stats(pgs: pd.DataFrame) -> pd.DataFrame:
     agg["fg_pct"]       = sd(agg["fg_makes"],  agg["fg_attempts"]).round(2)
     agg["fg3_pct"]      = sd(agg["pt3_makes"], agg["pt3_attempts"]).round(2)
     agg["ft_pct"]       = sd(agg["ft_makes"],  agg["ft_attempts"]).round(2)
-    agg["pm_per_40"]    = (sd(agg["plus_minus"], agg["min_played"]) * 40).round(2)
+    agg["pm_per_40"]    = (sd(agg["plus_minus"], agg["pm_minutes"]) * 40).round(2)
     agg["pts_per_40"]   = (sd(agg["points"],     agg["min_played"]) * 40).round(2)
     agg["ast_per_40"]   = (sd(agg["assists"],    agg["min_played"]) * 40).round(2)
     agg["pm_per_stint"] = sd(agg["plus_minus"],  agg["stints"]).fillna(0).round(2)
@@ -346,7 +354,7 @@ def show_player_pm_table(agg: pd.DataFrame):
         pm.style
             .map(style_pm, subset=["Plus/Minus","Plus/Minus per 40","Plus/Minus per Stint"])
             .format({
-                "Plus/Minus":           "{:+d}",
+                "Plus/Minus":           "{:+.0f}",
                 "Time":                 fmt_time,
                 "Plus/Minus per 40":    "{:+.2f}",
                 "Plus/Minus per Stint": "{:+.2f}",
@@ -380,9 +388,11 @@ def show_player_box_table(agg: pd.DataFrame):
 # -------------------------------------------------------------------------
 # BANNER
 # -------------------------------------------------------------------------
-st.markdown("""
+_team_now = st.session_state.get("team_choice")
+_banner_title = f"UWRF {new_games.TEAMS[_team_now]['label']} Basketball" if _team_now else "UWRF Basketball"
+st.markdown(f"""
 <div class="uwrf-banner">
-    <h1>UWRF Men's Basketball</h1>
+    <h1>{_banner_title}</h1>
     <p>UW-River Falls — Plus/Minus Analytics Dashboard</p>
 </div>
 """, unsafe_allow_html=True)
@@ -390,17 +400,90 @@ st.markdown("""
 # -------------------------------------------------------------------------
 # PASSWORD CHECK
 # -------------------------------------------------------------------------
-password = st.text_input("Enter password", type="password")
-if password != st.secrets["password"]:
+# Filters remember their selections; clear them when the team or season changes
+# so a stale selection from another team/season can't break the page.
+_FILTER_KEYS = ["p_players", "p_games", "l_games", "l_players", "g_sel_game"]
+
+def _reset_filters():
+    for _k in _FILTER_KEYS:
+        st.session_state.pop(_k, None)
+
+team = st.radio(
+    "Which team?",
+    options=list(new_games.TEAMS),
+    format_func=lambda t: new_games.TEAMS[t]["label"] + " basketball",
+    index=None,
+    horizontal=True,
+    key="team_choice",
+    on_change=_reset_filters,
+)
+if team is None:
+    st.info("Choose a team to continue.")
+    st.stop()
+
+team_label = new_games.TEAMS[team]["label"]
+expected_pw = new_games.get_team_password(st.secrets, team)
+if not expected_pw:
+    st.warning(f"The {team_label} dashboard isn't set up yet.")
+    st.stop()
+
+password = st.text_input(f"Enter {team_label} password", type="password", key=f"pw_{team}")
+if not hmac.compare_digest(password.encode("utf-8"), expected_pw.encode("utf-8")):
     st.warning("Please enter the correct password.")
     st.stop()
+
+DB_ACTIVE = new_games.default_db_path(team)
+
+# --- season dropdown (left) and check-for-new-games button (right) ---------------
+ctl_season, ctl_check = st.columns([2, 1])
+
+_check_out = None
+with ctl_check:
+    st.write("")
+    if st.button("\U0001F504 Check for new games", use_container_width=True, key="check_btn",
+                 help="Looks on uwrfsports.com for finished games that aren't here yet and adds them."):
+        with st.spinner("Checking uwrfsports.com for new games - this can take a minute or two..."):
+            _check_out = new_games.run_check(team, st.secrets)
+        st.cache_data.clear()
+
+if _check_out is not None:
+    _msg = "  \n".join(_check_out["messages"]) or "Done."
+    if not _check_out["ok"]:
+        st.error(_msg)
+    elif _check_out["imported"]:
+        st.success(_msg)
+    else:
+        st.info(_msg)
+    if _check_out["log"]:
+        with st.expander("Details"):
+            st.code(_check_out["log"])
+
+if not os.path.exists(DB_ACTIVE):
+    st.info(f"There's no {team_label} data yet. Click \"Check for new games\" to build it from the website.")
+    st.stop()
+
+_games_all = load_all_games(DB_ACTIVE).copy()
+if _games_all.empty:
+    st.info(f"No {team_label} games are in the database yet. Click \"Check for new games\".")
+    st.stop()
+_games_all["Season"] = _games_all["Date"].apply(new_games.season_label_for_date)
+_seasons = sorted(_games_all["Season"].unique().tolist(), reverse=True)
+
+with ctl_season:
+    season_choice = st.selectbox(
+        "Season", options=_seasons + ["All seasons"], key=f"season_{team}", on_change=_reset_filters
+    )
+
+if season_choice == "All seasons":
+    all_games = _games_all
+else:
+    all_games = _games_all[_games_all["Season"] == season_choice].reset_index(drop=True)
  
 # -------------------------------------------------------------------------
 # LOAD BASE DATA
 # -------------------------------------------------------------------------
-all_games    = load_all_games()
 all_game_ids = all_games["game_id"].tolist()
-all_pgs      = load_player_game_stats(tuple(all_game_ids))
+all_pgs      = load_player_game_stats(tuple(all_game_ids), DB_ACTIVE)
 all_players  = sorted(all_pgs["player_name"].dropna().unique().tolist())
  
 # -------------------------------------------------------------------------
@@ -495,13 +578,15 @@ with tab_games:
         st.divider()
  
         st.subheader("Player Stats")
-        game_pgs = load_player_game_stats((sel_game,)).copy()
+        game_pgs = load_player_game_stats((sel_game,), DB_ACTIVE).copy()
         if not game_pgs.empty:
             game_pgs["Player"] = game_pgs["player_name"].apply(humanize_player)
             game_pgs["pm_per_stint"] = (
                 game_pgs["plus_minus"].astype(float) /
                 game_pgs["stints"].astype(float).replace(0, float("nan"))
             ).fillna(0).round(2)
+            # a game with no play-by-play has no plus/minus: show "—", not 0
+            game_pgs["pm_per_stint"] = game_pgs["pm_per_stint"].where(game_pgs["plus_minus"].notna())
             gd = game_pgs[[
                 "Player","plus_minus","min_played","stints","pm_per_stint",
                 "points","assists","rebounds","steals","blocks","turnovers","fouls",
@@ -519,7 +604,7 @@ with tab_games:
                 gd.style
                     .map(style_pm, subset=["Plus/Minus","Plus/Minus per Stint"])
                     .format({
-                        "Plus/Minus":           "{:+d}",
+                        "Plus/Minus":           "{:+.0f}",
                         "Time":                 fmt_time,
                         "Plus/Minus per Stint": "{:+.2f}",
                         "FG %": "{:.2f}", "3PT %": "{:.2f}", "FT %": "{:.2f}",
@@ -530,7 +615,7 @@ with tab_games:
         st.divider()
  
         st.subheader("Play by Play")
-        ev = load_events(sel_game)
+        ev = load_events(sel_game, DB_ACTIVE)
         if not ev.empty:
             ev = ev.copy()
             ev["Event"]  = ev["event_type"].map(EVENT_LABELS).fillna(ev["event_type"])
@@ -593,7 +678,7 @@ with tab_players:
         p_pool = p_pool[p_pool["Result"] == "L"]
     p_ids = tuple(p_games) if p_games else tuple(p_pool["game_id"].tolist())
  
-    pgs = load_player_game_stats(p_ids)
+    pgs = load_player_game_stats(p_ids, DB_ACTIVE)
     if p_players:
         pgs = pgs[pgs["player_name"].isin(p_players)]
  
@@ -660,7 +745,7 @@ with tab_lineups:
         l_pool = l_pool[l_pool["Result"] == "L"]
     l_ids = tuple(l_games) if l_games else tuple(l_pool["game_id"].tolist())
  
-    lin = load_lineups(l_ids)
+    lin = load_lineups(l_ids, DB_ACTIVE)
  
     st.divider()
  

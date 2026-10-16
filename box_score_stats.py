@@ -2,32 +2,17 @@
 
 import sqlite3
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
-DB_PATH = "basketball.db"
+import roster
 
-# -----------------------------
-# UWRF ROSTER
-# Used to identify which box score table belongs to UWRF
-# -----------------------------
-TEAM_PLAYERS = {
-    "HAVLIK,OWEN",
-    "THOMPSON,MICAH",
-    "LEIFKER,JACK",
-    "RALPH,GAVIN",
-    "WANGUHU,JEREMY",
-    "POSTEL,REGGIE",
-    "CLEARY,DANIEL",
-    "TENGBLAD,DREW",
-    "TENGBLAD,REID",
-    "VARIANO,BRODY",
-    "CLAUSEN,EVAN",
-    "LOEGERING,CODY",
-    "SCHULT,WESTON",
-    "JOHNSON,IAN",
-    "STEINKE,KYLE",
-    "ROGGE,EVAN",
-}
+DB_PATH = "data/basketball.db"
+
+# NOTE: the old hardcoded TEAM_PLAYERS name list is gone. Which box score
+# table belongs to UWRF is now determined by the team-name label the PDF
+# prints right above each table (see select_uwrf_table below), and every
+# player found on that table is logged to roster_appearances automatically -
+# see roster.py for why that's a more durable approach across seasons.
 
 # -----------------------------
 # DATABASE
@@ -126,15 +111,14 @@ def parse_player_line(clean: str) -> Optional[Dict]:
         if parts[idx].isdigit():
             idx += 1
 
-        # Name may be split into two tokens if there is a space after the comma
-        name = parts[idx]
+        # The name is every token up to the '*' / minutes: "Havlik,Owen", "Postel, Reggie",
+        # "Reeck ,Jake" (space before the comma) or "Van Scoy,Will" (two-word last name)
+        name_tokens = [parts[idx]]
         idx += 1
-
-        # If next token is not '*' and not a minute field, it is probably the
-        # second half of the player name, e.g. "Postel," + "Reggie"
-        if idx < len(parts) and parts[idx] != "*" and not re.fullmatch(r"\d+\+?", parts[idx]):
-            name = f"{name}{parts[idx]}"
+        while idx < len(parts) and parts[idx] != "*" and not re.fullmatch(r"\d+\+?", parts[idx]):
+            name_tokens.append(parts[idx])
             idx += 1
+        name = re.sub(r"\s*,\s*", ",", " ".join(name_tokens))
 
         # Starter marker
         if idx < len(parts) and parts[idx] == "*":
@@ -218,9 +202,16 @@ def parse_player_line(clean: str) -> Optional[Dict]:
 # -----------------------------
 # BOX SCORE TABLE EXTRACTION
 # -----------------------------
-def extract_box_score_tables(lines: List[str]) -> List[List[Dict]]:
+def extract_box_score_tables(lines: List[str]) -> List[Tuple[str, List[Dict]]]:
     """
-    Extract full-game player tables only.
+    Extract full-game player tables only, each paired with the team-name
+    label the PDF prints on the line immediately before the table header,
+    e.g.:
+        UW-River Falls 66
+        # Player GS MIN FG 3PT FT ...
+
+    That label is what select_uwrf_table uses to identify UWRF's table -
+    no player-name list required.
 
     This skips:
       - 1st Half Box Score
@@ -228,8 +219,10 @@ def extract_box_score_tables(lines: List[str]) -> List[List[Dict]]:
 
     and only keeps the first two full-game tables near the top of the PDF.
     """
-    tables: List[List[Dict]] = []
+    tables: List[Tuple[str, List[Dict]]] = []
     current_table: List[Dict] = []
+    current_label = ""
+    prev_line = ""
     in_table = False
 
     reached_half_box_scores = False
@@ -238,71 +231,98 @@ def extract_box_score_tables(lines: List[str]) -> List[List[Dict]]:
         clean = raw_line.strip()
 
         # Stop before half box score sections
-        if clean.startswith("1st Half Box Score") or clean.startswith("2nd Half Box Score"):
+        if clean.startswith(("1st Half Box Score", "2nd Half Box Score", "First Half Box Score", "Second Half Box Score")):
             reached_half_box_scores = True
 
         if reached_half_box_scores:
             break
 
-        # Start of a full-game box score table
+        # Start of a full-game box score table - the team name is on the
+        # line right before this header
         if clean.startswith("# Player GS MIN"):
             if in_table and current_table:
-                tables.append(current_table)
+                tables.append((current_label, current_table))
             current_table = []
+            current_label = prev_line
             in_table = True
+            prev_line = clean
             continue
 
         if not in_table:
+            prev_line = clean
             continue
 
         # End of current table
         if clean.startswith("Totals"):
             if current_table:
-                tables.append(current_table)
+                tables.append((current_label, current_table))
             current_table = []
             in_table = False
+            prev_line = clean
             continue
 
         player = parse_player_line(clean)
         if player is not None:
             current_table.append(player)
 
+        prev_line = clean
+
     if in_table and current_table:
-        tables.append(current_table)
+        tables.append((current_label, current_table))
 
     return tables
 
 
-def count_roster_matches(table: List[Dict]) -> int:
-    return sum(1 for player in table if player["player_name"] in TEAM_PLAYERS)
-
-
-def select_uwrf_table(tables: List[List[Dict]]) -> List[Dict]:
+def select_uwrf_table(
+    conn: sqlite3.Connection,
+    game_id: int,
+    tables: List[Tuple[str, List[Dict]]],
+) -> List[Dict]:
     """
-    Pick the table with the most UWRF roster-name matches.
-    This handles home and away games automatically.
+    Pick the table whose team-name label identifies it as UWRF's (handles
+    home and away automatically, since the label always sits right above
+    the table regardless of order). Every player found on that table is
+    then logged to the self-building roster for this game's season.
     """
     if not tables:
         return []
 
-    best_table = max(tables, key=count_roster_matches)
-    best_match_count = count_roster_matches(best_table)
+    matches = [(label, table) for label, table in tables if roster.is_uwrf_team_label(label)]
 
-    if best_match_count == 0:
-        print("WARNING: No UWRF roster matches found in any full-game box score table.")
-        return []
+    if not matches:
+        print(
+            "WARNING: Could not find a UWRF-labeled box score table "
+            f"(labels seen: {[label for label, _ in tables]!r}). "
+            "Falling back to whichever table has the most known-roster names."
+        )
+        known = roster.get_full_roster(conn, roster.get_team_for_game(conn, game_id))
+        best_label, best_table = max(
+            tables,
+            key=lambda pair: sum(1 for p in pair[1] if p["player_name"] in known),
+        )
+        if not any(p["player_name"] in known for p in best_table):
+            print("WARNING: No UWRF roster matches found in any full-game box score table either.")
+            return []
+        matches = [(best_label, best_table)]
 
-    return best_table
+    _, uwrf_table = matches[0]
+
+    season = roster.get_season_for_game(conn, game_id)
+    team = roster.get_team_for_game(conn, game_id)   # MBB or WBB
+    for player in uwrf_table:
+        roster.record_appearance(conn, player["player_name"], season, game_id, team)
+
+    return uwrf_table
 
 
-def parse_box_score(lines: List[str]) -> List[Dict]:
+def parse_box_score(conn: sqlite3.Connection, game_id: int, lines: List[str]) -> List[Dict]:
     tables = extract_box_score_tables(lines)
 
     if not tables:
         print("WARNING: No full-game box score tables found.")
         return []
 
-    return select_uwrf_table(tables)
+    return select_uwrf_table(conn, game_id, tables)
 
 
 # -----------------------------
@@ -350,7 +370,7 @@ def parse_game_box_score(game_id: int) -> None:
     print(f"\nProcessing game_id: {game_id}")
 
     lines = get_raw_lines(conn, game_id)
-    players = parse_box_score(lines)
+    players = parse_box_score(conn, game_id, lines)
 
     print(f"Parsed {len(players)} UWRF players\n")
 
@@ -370,6 +390,30 @@ def parse_game_box_score(game_id: int) -> None:
 
 
 # -----------------------------
+# ROSTER-ONLY PASS
+#
+# This only reads raw_lines and writes to roster_appearances - it does not
+# touch player_game_stats, so it can run early in the pipeline (right after
+# import, before compute_plus_minus has created those rows). run_all.py
+# runs this before parse_events, so identify_team() always has this
+# season's roster available by the time it needs it.
+# -----------------------------
+def build_roster_for_all_games() -> None:
+    conn = connect_db()
+    game_ids = get_all_game_ids(conn)
+
+    print(f"Building roster from {len(game_ids)} games' box scores...\n")
+
+    for game_id in game_ids:
+        lines = get_raw_lines(conn, game_id)
+        players = parse_box_score(conn, game_id, lines)
+        print(f"  game_id {game_id}: {len(players)} UWRF players logged to roster")
+
+    conn.close()
+    print("\nRoster build complete.")
+
+
+# -----------------------------
 # RUN FOR ALL GAMES
 # -----------------------------
 def parse_all_games() -> None:
@@ -381,6 +425,38 @@ def parse_all_games() -> None:
 
     for game_id in game_ids:
         parse_game_box_score(game_id)
+
+    load_games_without_play_by_play()
+
+
+def load_games_without_play_by_play() -> None:
+    """Some box score PDFs have no play-by-play section (it was never posted).
+    Plus/minus, stints and lineups can't be worked out for those games, but the
+    box score numbers can still be kept. For each such game: remove anything the
+    play-by-play steps may have half-built, then store one row per UWRF player
+    with the box score stats and plus_minus / stints left empty (NULL)."""
+    conn = connect_db()
+    try:
+        game_ids = [
+            gid for gid in get_all_game_ids(conn)
+            if not any("play by play" in l.lower() for l in get_raw_lines(conn, gid))
+        ]
+        for gid in game_ids:
+            players = parse_box_score(conn, gid, get_raw_lines(conn, gid))
+            for table in ("lineup_states", "events", "player_game_stats"):
+                conn.execute(f"DELETE FROM {table} WHERE game_id = ?", (gid,))
+            for p in players:
+                conn.execute(
+                    "INSERT INTO player_game_stats (game_id, player_name, plus_minus, stints) "
+                    "VALUES (?, ?, NULL, NULL)",
+                    (gid, p["player_name"]),
+                )
+            conn.commit()
+            update_player_stats(conn, gid, players)
+            print(f"  game_id {gid}: no play-by-play in the PDF - kept {len(players)} players' "
+                  "box score stats, plus/minus left empty")
+    finally:
+        conn.close()
 
 
 # -----------------------------

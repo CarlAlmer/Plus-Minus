@@ -1,5 +1,4 @@
-
-# run_all.py
+﻿# run_all.py
 
 import os
 import sqlite3
@@ -7,9 +6,9 @@ import runpy
 
 # Make sure all files use the same basketball.db
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-os.chdir(BASE_DIR)
+os.chdir(os.path.join(BASE_DIR, ".."))
 
-DB_PATH = os.path.join(BASE_DIR, "basketball.db")
+DB_PATH = "data/basketball.db"
 
 
 def count_rows(table_name):
@@ -34,7 +33,7 @@ def get_all_game_ids():
 
 def show_counts(step_name):
     print(f"\nDatabase check after {step_name}:")
-    for table in ["games", "raw_lines", "events", "lineups", "lineup_states", "player_game_stats"]:
+    for table in ["games", "raw_lines", "roster_appearances", "events", "lineups", "lineup_states", "player_game_stats"]:
         try:
             print(f"  {table}: {count_rows(table)} rows")
         except Exception:
@@ -76,6 +75,12 @@ def run_all():
     from bulk_import import run_bulk_import
     run_bulk_import()
     show_counts("bulk import")
+
+    print("\nSTEP 2.5: Building roster (self-building, from box scores)")
+    print("------------------------------------------------------------")
+    from box_score_stats import build_roster_for_all_games
+    build_roster_for_all_games()
+    show_counts("building roster")
 
     print("\nSTEP 3: Parsing play-by-play events")
     print("-----------------------------------")

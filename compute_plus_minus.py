@@ -11,13 +11,26 @@ DB_PATH = "data/basketball.db"
 def connect_db() -> sqlite3.Connection:
     return sqlite3.connect(DB_PATH)
  
+import sqlite3
+import re
+from typing import Dict, List, Optional, Tuple
+ 
+# could also need path to be data/basketball.db if running from a different directory
+DB_PATH = "data/basketball.db"
+ 
+# -------------------------------------------------------------------------
+# DB CONNECTION
+# -------------------------------------------------------------------------
+def connect_db() -> sqlite3.Connection:
+    return sqlite3.connect(DB_PATH)
+ 
 # -------------------------------------------------------------------------
 # HELPERS
 # -------------------------------------------------------------------------
 def normalize_player_name(name: Optional[str]) -> Optional[str]:
     if not name:
         return None
-    return re.sub(r",\s+", ",", name.strip().upper())
+    return re.sub(r"\s*,\s*", ",", name.strip().upper())   # also fixes "REECK ,JAKE"
  
  
 # -------------------------------------------------------------------------
@@ -68,7 +81,14 @@ def parse_starters_and_scores(lines: List[str]):
             if line.strip().startswith("Totals"):
                 break
             # Starter lines contain an asterisk: '03 Havlik,Owen * 33 ...'
-            match = re.match(r"^\d+\s+([\w,\-\'\.]+(?:\s+[\w\-\'\.]+)?)\s+\*", line.strip())
+            stripped = line.strip()
+            match = (
+                re.match(r"^\d+\s+([\w,\-\'\.]+(?:\s+[\w\-\'\.]+)?)\s+\*", stripped)
+                # some box scores print a space before the comma: '03 Reeck ,Jake * 29 ...'
+                or re.match(r"^\d+\s+([\w\-\'\.]+\s+,\s*[\w\-\'\.]+)\s+\*", stripped)
+                # multi-word last name: '03 Van Scoy,Will * 20 ...'
+                or re.match(r"^\d+\s+((?:[\w\-\'\.]+\s+){1,2}[\w\-\'\.]+,\s*[\w\-\'\.]+)\s+\*", stripped)
+            )
             if match:
                 starters.append(normalize_player_name(match.group(1).strip()))
  
@@ -267,6 +287,57 @@ def validate_plus_minus(
 # Main computation
 # -------------------------------------------------------------------------
  
+def infer_period_start_lineup(events, start_index, carried):
+    """
+    Who is on the floor at the start of a new period?  The PDF does not log
+    substitutions made between periods, so carrying the old lineup forward can
+    leave 6 (or the wrong 5) players on the floor.  Anyone whose FIRST
+    appearance in the new period is something other than a sub_in must have
+    been on the floor already.  If that gives exactly 5 players, use them;
+    otherwise top up from the carried-over lineup (never anyone who subs in),
+    and fall back to the carried-over lineup if it still isn't 5.
+    """
+    period = events[start_index][1]
+    on_floor, entered = [], set()
+    window = []
+    for ev in events[start_index:]:
+        if ev[1] != period:
+            break
+        window.append(ev)
+    # every UWRF substitution in this period, in order: (position, player, "in"/"out")
+    subs = []
+    for pos, ev in enumerate(window):
+        if ev[3] == "UWRF" and ev[4] and ev[5] in ("sub_in", "sub_out", "_sub_in_done"):
+            subs.append((pos, normalize_player_name(ev[4]), "out" if ev[5] == "sub_out" else "in"))
+    for pos, ev in enumerate(window):
+        team, name, etype = ev[3], ev[4], ev[5]
+        name = normalize_player_name(name)
+        if team != "UWRF" or not name or name == "TEAM":
+            continue
+        if name in entered or name in on_floor:
+            continue
+        if etype in ("sub_in", "_sub_in_done"):
+            entered.add(name)
+        elif etype == "sub_out":
+            on_floor.append(name)
+        else:
+            # a plain play (shot, rebound, foul...).  If this player's next substitution is a
+            # SUB IN, he was NOT on the floor - the PDF just printed the play a line early
+            # (or credited it oddly), so don't count him as a starter.
+            nxt = next((k for (sp, sn, k) in subs if sn == name and sp > pos), None)
+            if nxt == "in":
+                entered.add(name)
+            else:
+                on_floor.append(name)
+    if len(on_floor) > 5:
+        known = [p for p in on_floor if p in carried]
+        return known if len(known) == 5 else list(carried)
+    for p in carried:
+        if len(on_floor) < 5 and p not in on_floor and p not in entered:
+            on_floor.append(p)
+    return on_floor if len(on_floor) == 5 else list(carried)
+
+
 def compute_game_plus_minus(game_id: int) -> Dict[str, int]:
     """
     Compute plus/minus for every UWRF player in a given game.
@@ -312,9 +383,17 @@ def compute_game_plus_minus(game_id: int) -> Dict[str, int]:
     print(f"Starting lineup (auto-detected): {lineup}\n")
  
     try:
+        previous_period = None
         for i, ev in enumerate(events):
             event_num, period, clock, team, player, event_type, points, desc = ev
             player = normalize_player_name(player)
+
+            # new period: work out who really starts it (subs between periods aren't logged)
+            if previous_period is not None and period != previous_period:
+                lineup = infer_period_start_lineup(events, i, lineup)
+                for p in lineup:
+                    ensure_player(plus_minus, p)
+            previous_period = period
  
             if event_type == "sub_out" and team == "UWRF" and player:
                 if player in lineup:
@@ -334,7 +413,7 @@ def compute_game_plus_minus(game_id: int) -> Dict[str, int]:
                         break
  
                 if len(lineup) != 5:
-                    raise ValueError(
+                    print(
                         f"Lineup size error after sub_out at event {event_num} "
                         f"(P{period} {clock}): expected 5 players, got {len(lineup)}. "
                         f"Current lineup: {lineup}"
@@ -346,7 +425,7 @@ def compute_game_plus_minus(game_id: int) -> Dict[str, int]:
                     lineup.append(player)
  
                 if len(lineup) != 5:
-                    raise ValueError(
+                    print(
                         f"Lineup size error after sub_in at event {event_num} "
                         f"(P{period} {clock}): expected 5 players, got {len(lineup)}. "
                         f"Current lineup: {lineup}"
@@ -421,5 +500,3 @@ def compute_all_games_plus_minus():
 # -------------------------------------------------------------------------
 if __name__ == "__main__":
     compute_all_games_plus_minus()
-
- 

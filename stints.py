@@ -2,7 +2,7 @@ import sqlite3
 import re
 from typing import Dict, List, Optional, Tuple
 
-DB_PATH = "basketball.db"
+DB_PATH = "data/basketball.db"
 
 
 # -------------------------------------------------------------------------
@@ -18,7 +18,7 @@ def connect_db() -> sqlite3.Connection:
 def normalize_player_name(name: Optional[str]) -> Optional[str]:
     if not name:
         return None
-    return re.sub(r",\s+", ",", name.strip().upper())
+    return re.sub(r"\s*,\s*", ",", name.strip().upper())   # also fixes "REECK ,JAKE"
 
 
 def warn(message: str) -> None:
@@ -48,9 +48,12 @@ def parse_starters(lines: List[str]) -> List[str]:
             if clean.startswith("Totals"):
                 break
 
-            match = re.match(
-                r"^\d+\s+([\w,\-\'\.]+(?:\s+[\w\-\'\.]+)?)\s+\*",
-                clean
+            match = (
+                re.match(r"^\d+\s+([\w,\-\'\.]+(?:\s+[\w\-\'\.]+)?)\s+\*", clean)
+                # some box scores print a space before the comma: '03 Reeck ,Jake * 29 ...'
+                or re.match(r"^\d+\s+([\w\-\'\.]+\s+,\s*[\w\-\'\.]+)\s+\*", clean)
+                # multi-word last name: '03 Van Scoy,Will * 20 ...'
+                or re.match(r"^\d+\s+((?:[\w\-\'\.]+\s+){1,2}[\w\-\'\.]+,\s*[\w\-\'\.]+)\s+\*", clean)
             )
             if match:
                 starters.append(normalize_player_name(match.group(1).strip()))
@@ -201,6 +204,9 @@ def end_lineup_stints(
 # -------------------------------------------------------------------------
 # MAIN STINT COMPUTATION
 # -------------------------------------------------------------------------
+from compute_plus_minus import infer_period_start_lineup
+
+
 def compute_game_stints(game_id: int) -> Dict[str, int]:
     """
     Stint rules:
@@ -240,6 +246,7 @@ def compute_game_stints(game_id: int) -> Dict[str, int]:
             # halftime / new period split
             if previous_period is not None and period != previous_period:
                 end_lineup_stints(lineup, active_stints)
+                lineup = infer_period_start_lineup(events, i, lineup)
                 start_lineup_stints(lineup, stints, active_stints)
 
             previous_period = period
@@ -352,6 +359,14 @@ def compute_all_games_stints() -> None:
         print("==============================")
         print(f"Processing game_id {game_id}")
         print("==============================")
+
+        # a game whose PDF has no play-by-play has no stints to work out
+        c = connect_db()
+        has_events = c.execute("SELECT 1 FROM events WHERE game_id = ? LIMIT 1", (game_id,)).fetchone()
+        c.close()
+        if not has_events:
+            print("No play-by-play events - skipped\n")
+            continue
 
         try:
             stints = compute_game_stints(game_id)
