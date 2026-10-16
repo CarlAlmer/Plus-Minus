@@ -99,7 +99,7 @@ def normalize_player_name(name: Optional[str]) -> Optional[str]:
     # Standardize player names to LASTNAME,FIRSTNAME (no space after comma, all caps)
     if not name:
         return None
-    return re.sub(r",\s+", ",", name.strip().upper())
+    return re.sub(r"\s*,\s*", ",", name.strip().upper())   # also fixes "REECK ,JAKE"
  
  
 def identify_team(player: Optional[str], uwrf_names: Set[str]) -> Optional[str]:
@@ -114,6 +114,50 @@ def identify_team(player: Optional[str], uwrf_names: Set[str]) -> Optional[str]:
     return "Opponent"
  
  
+_PARTICLES = ("VAN", "VON", "DER", "TEN", "TER")
+
+
+def _name_key(name: str) -> str:
+    # spaces and periods ignored: 'VAN SCOY,WILL' == 'VANSCOY,WILL', 'ANTHONY-LARMOUTH,T.' == '...,T'
+    return re.sub(r"[\s.]", "", name.upper())
+
+
+def resolve_roster_name(player: Optional[str], uwrf_names: Set[str]) -> Optional[str]:
+    """The play-by-play and the box score do not always spell a name the same way:
+      - spacing / periods:   VAN SCOY,WILL vs VANSCOY,WILL;  ANTHONY-LARMOUTH,T vs ANTHONY-LARMOUTH,T.
+      - cut off at 20 chars: ANTHONY-LARMOUTH,TER vs ANTHONY-LARMOUTH,TERENCE
+      - particle last:       SCOY,WILL (VAN) vs VAN SCOY,WILL
+      - first name vs initial: ANTHONY-LARMOUTH,TER vs ANTHONY-LARMOUTH,T.
+    If the name is not on the roster exactly, find the one roster player it
+    clearly refers to and return the roster's spelling, so the player is
+    recognised as UWRF and matches the box score everywhere else. Ambiguous or
+    unknown names are returned unchanged (treated as the opponent)."""
+    if not player or "," not in player or player in uwrf_names:
+        return player
+    key = _name_key(player)
+    keyed = {}
+    for n in uwrf_names:
+        keyed.setdefault(_name_key(n), set()).add(n)
+    exact = keyed.get(key)
+    if exact and len(exact) == 1:
+        return next(iter(exact))
+    cands = {n for k, ns in keyed.items() if k.startswith(key) for n in ns}          # cut off
+    if len(cands) == 1:
+        return next(iter(cands))
+    cands = set()                                                                     # 'SCOY,WILL' for 'VAN SCOY,WILL'
+    for k, ns in keyed.items():
+        last, _, first = k.partition(",")
+        for p in _PARTICLES:
+            if last.startswith(p) and len(last) > len(p) + 1 and (last[len(p):] + "," + first).startswith(key):
+                cands |= ns
+    if len(cands) == 1:
+        return next(iter(cands))
+    last, _, first = key.partition(",")                                              # initial on the roster
+    cands = {n for k, ns in keyed.items() for n in ns
+             if k.partition(",")[0] == last and len(k.partition(",")[2]) == 1 and first.startswith(k.partition(",")[2])}
+    return next(iter(cands)) if len(cands) == 1 else player
+
+
 def should_skip_line(line: str) -> bool:
     # Return True for header/metadata lines that contain no play-by-play events
     clean = line.strip()
@@ -217,7 +261,9 @@ def extract_clock(line: str) -> Optional[str]:
  
 def extract_player(line: str) -> Optional[str]:
     # Find the player name following a "by" keyword (e.g. "Good FT by HAVLIK,OWEN")
-    match = re.search(r"\bby\s+([A-Z,\-'.]+(?:\([^)]+\))?)", line, re.IGNORECASE)
+    # a few box scores print a space before the comma ('REECK ,JAKE'), so allow it
+    # allows a space before the comma ('REECK ,JAKE') and a two-word last name ('VAN SCOY,WILL')
+    match = re.search(r"\bby\s+((?:[A-Z\-'.]+\s+){0,2}[A-Z\-'.]+\s*,\s*[A-Z\-'.]+(?:\([^)]+\))?|[A-Z,\-'.]+(?:\([^)]+\))?)", line, re.IGNORECASE)
     if not match:
         return None
  
@@ -258,7 +304,7 @@ def parse_line(line: str, inherited_clock: Optional[str], uwrf_names: Set[str]) 
     lower_line = clean_line.lower()
  
     event_type, points = classify_event_type(lower_line)
-    player = extract_player(clean_line)
+    player = resolve_roster_name(extract_player(clean_line), uwrf_names)
  
     # Use the timestamp on this line; fall back to the last seen clock if absent
     clock = extract_clock(clean_line)
@@ -416,7 +462,8 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
         clean = normalize_spaces(raw_line)
  
         # Detect half/OT section headers and update period context
-        if clean == "1st Half Play By Play":
+        # (the older PDFs say "First Half" / "Second Half" instead of "1st Half" / "2nd Half")
+        if clean in ("1st Half Play By Play", "First Half Play By Play"):
             current_period = 1
             in_pbp_section = True
             current_clock = "20:00"
@@ -427,7 +474,7 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
             })
             continue
  
-        if clean == "2nd Half Play By Play":
+        if clean in ("2nd Half Play By Play", "Second Half Play By Play"):
             # Close the first half
             if current_period == 1:
                 parsed_events.append({
@@ -445,7 +492,8 @@ def parse_game_events(game_id: int, delete_existing: bool = True) -> None:
             })
             continue
  
-        if clean == "OT Play By Play" or (clean.startswith("OT") and clean.endswith("Play By Play")):
+        if (clean == "OT Play By Play" or (clean.startswith("OT") and clean.endswith("Play By Play"))
+                or (clean.endswith("Play By Play") and re.search(r"\bOT\b|overtime", clean, re.IGNORECASE))):
             # Close the previous period
             if current_period is not None:
                 end_clock = "0:00"
